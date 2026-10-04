@@ -1,109 +1,14 @@
-package main
+// Package seed arma las cuentas de demo con las que arranca una instalación vacía.
+package seed
 
 import (
 	"math/rand"
 	"sort"
 	"time"
+
+	"taas-backend/internal/domain"
+	"taas-backend/internal/service"
 )
-
-// Plantillas por rubro: el punto de partida de cada empresa nueva, editable después desde Configuración.
-type template struct {
-	Industry string
-	Config   Config
-}
-
-// Setup: lo que el titular responde en el onboarding. No elige "módulos": cuenta cómo trabaja
-// y de ahí sale la configuración inicial, que después puede ajustar desde Configuración.
-type Setup struct {
-	Template string   `json:"template"`
-	Industry string   `json:"industry"` // solo para el rubro "otro": cómo se describe el cliente
-	Services []string `json:"services"` // el catálogo sugerido, ya ajustado por el cliente
-	Team     bool     `json:"team"`     // ¿atiende más de una persona? => flujo de estados completo
-	SLA      bool     `json:"sla"`      // ¿hay plazos que cumplir? => vencimientos por prioridad
-	Problems bool     `json:"problems"` // ¿se repiten los mismos incidentes? => gestión de problemas
-	Fields   bool     `json:"fields"`   // ¿hace falta pedir datos propios en cada ticket?
-}
-
-// full: la plantilla con todo activado (cuentas de demo, vista previa del onboarding).
-var full = Setup{Team: true, SLA: true, Problems: true, Fields: true}
-
-// build arma la configuración para unas respuestas. Devuelve una copia: cada cuenta edita la suya
-// sin tocar la plantilla.
-func (t template) build(in Setup) (Config, error) {
-	c := t.Config
-	c.Modules = Modules{SLA: in.SLA, Problems: in.Problems}
-	c.Services = append([]string{}, c.Services...)
-	if len(in.Services) > 0 {
-		c.Services = in.Services
-	}
-	c.States = append([]string{}, c.States...)
-	if !in.Team {
-		c.States = []string{c.States[0], c.States[len(c.States)-1]} // sin pasos intermedios: abrir y cerrar
-	}
-	c.SLAHours = map[string]int{}
-	for k, v := range t.Config.SLAHours {
-		c.SLAHours[k] = v
-	}
-	c.Fields = []Field{}
-	if in.Fields {
-		for _, f := range t.Config.Fields {
-			f.Key = slug(f.Label)
-			f.Options = append([]string{}, f.Options...)
-			c.Fields = append(c.Fields, f)
-		}
-	}
-	return c, c.validate()
-}
-
-var templateOrder = []string{"it", "salud", "logistica", "otro"}
-
-var templates = map[string]template{
-	"it": {"Soporte IT", Config{
-		Services: []string{"VPN", "Correo", "ERP Facturación", "Impresoras", "WiFi"},
-		States:   []string{"Abierto", "En curso", "Resuelto"},
-		SLAHours: map[string]int{"alta": 4, "media": 8, "baja": 24},
-		Fields: []Field{
-			{Label: "Sede", Type: "select", Options: []string{"Casa central", "Sucursal Rosario", "Remoto"}, Required: true},
-			{Label: "Equipo afectado", Type: "text"},
-		},
-		RecurrenceMin: 2, RecurrenceDays: 7,
-	}},
-	"salud": {"Salud", Config{
-		Services: []string{"Historia clínica electrónica", "Turnos online", "Equipamiento de imágenes", "Laboratorio", "Facturación a obras sociales"},
-		States:   []string{"Reportado", "En revisión", "Derivado a proveedor", "Resuelto"},
-		SLAHours: map[string]int{"alta": 1, "media": 4, "baja": 12},
-		Fields: []Field{
-			{Label: "Sector", Type: "select", Options: []string{"Guardia", "Internación", "Consultorios", "Diagnóstico"}, Required: true},
-			{Label: "Afecta la atención de pacientes", Type: "select", Options: []string{"Sí", "No"}, Required: true},
-			{Label: "N° de equipo", Type: "text"},
-		},
-		RecurrenceMin: 2, RecurrenceDays: 14,
-	}},
-	"logistica": {"Logística", Config{
-		Services: []string{"Sistema de ruteo", "Handhelds de depósito", "Tracking de envíos", "Balanza y etiquetado", "Facturación"},
-		States:   []string{"Nuevo", "Asignado", "En espera de repuesto", "Cerrado"},
-		SLAHours: map[string]int{"alta": 2, "media": 8, "baja": 48},
-		Fields: []Field{
-			{Label: "Depósito", Type: "select", Options: []string{"Pilar", "Avellaneda", "Córdoba"}, Required: true},
-			{Label: "Patente o unidad", Type: "text"},
-			{Label: "Envíos afectados", Type: "number"},
-		},
-		RecurrenceMin: 3, RecurrenceDays: 7,
-	}},
-	// Punto de partida genérico: el cliente describe su rubro y ajusta los servicios en el onboarding.
-	"otro": {"Otro rubro", Config{
-		Services: []string{"Atención al cliente", "Sistemas", "Administración"},
-		States:   []string{"Nuevo", "En curso", "Resuelto"},
-		SLAHours: map[string]int{"alta": 4, "media": 8, "baja": 24},
-		Fields: []Field{
-			{Label: "Área", Type: "select", Options: []string{"Administración", "Ventas", "Operaciones"}, Required: true},
-			{Label: "Contacto", Type: "text"},
-		},
-		RecurrenceMin: 2, RecurrenceDays: 7,
-	}},
-}
-
-// --- Empresas de demo ---
 
 type seedProblem struct {
 	service, title, desc string
@@ -165,11 +70,11 @@ var seeds = []seedTenant{
 	},
 }
 
-// Contraseña de todos los usuarios de demo (datos de prueba; ver README).
-const demoPassword = "demo-taas-2026"
+// DemoPassword: contraseña de todos los usuarios de demo (datos de prueba; ver README).
+const DemoPassword = "demo-taas-2026"
 
 // seedEmail: "Ana Gómez" en nexo.demo -> ana@nexo.demo
-func seedEmail(name, domain string) string {
+func seedEmail(name, host string) string {
 	first := []rune{}
 	for _, r := range name {
 		if r == ' ' {
@@ -179,30 +84,30 @@ func seedEmail(name, domain string) string {
 	}
 	ascii := map[rune]rune{'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u'}
 	out := []rune{}
-	for _, r := range []rune(slug(string(first))) {
+	for _, r := range []rune(domain.Slug(string(first))) {
 		if a, ok := ascii[r]; ok {
 			r = a
 		}
 		out = append(out, r)
 	}
-	return string(out) + "@" + domain
+	return string(out) + "@" + host
 }
 
-func seed() []*Tenant {
+// Tenants arma las cuentas de demo, con un mes de actividad y un problema en cada etapa.
+func Tenants() []*domain.Tenant {
 	rnd := rand.New(rand.NewSource(7)) // fijo: la demo arranca siempre igual
 	now := time.Now()
-	hash := hashPassword(demoPassword) // una sola vez: derivarla es caro a propósito
-	out := []*Tenant{}
+	hash := service.HashPassword(DemoPassword) // una sola vez: derivarla es caro a propósito
+	out := []*domain.Tenant{}
 	for i, sd := range seeds {
-		tpl := templates[sd.template]
-		cfg, _ := tpl.build(full)
-		t := &Tenant{ID: i + 1, Name: sd.name, Industry: tpl.Industry, Onboarded: true, OwnerID: 1, Config: cfg,
-			Roles: defaultRoles(), NextUserID: len(sd.users) + 1, NextRoleID: 4, Problems: []*Problem{}}
+		industry, cfg, _ := service.BuildConfig(sd.template, service.Full)
+		t := &domain.Tenant{ID: i + 1, Name: sd.name, Industry: industry, Onboarded: true, OwnerID: 1, Config: cfg,
+			Roles: service.DefaultRoles(), NextUserID: len(sd.users) + 1, NextRoleID: 4, Problems: []*domain.Problem{}}
 		for j, name := range sd.users {
 			role := []int{1, 2, 2, 3}[j] // titular, agente, agente, solicitante
-			t.Users = append(t.Users, User{j + 1, name, seedEmail(name, sd.domain), role, hash})
+			t.Users = append(t.Users, domain.User{ID: j + 1, Name: name, Email: seedEmail(name, sd.domain), RoleID: role, Hash: hash})
 		}
-		closed := t.closedState()
+		closed := t.ClosedState()
 
 		// 45 incidentes repartidos en los últimos 30 días, más 3 recientes del servicio sin investigar.
 		ages := []float64{30, 9, 0.5} // horas
@@ -215,11 +120,11 @@ func seed() []*Tenant {
 			if age > 31 {
 				service = t.Config.Services[rnd.Intn(len(t.Config.Services))]
 			}
-			prio := priorities[[]int{0, 1, 1, 2}[rnd.Intn(4)]]
+			prio := domain.Priorities[[]int{0, 1, 1, 2}[rnd.Intn(4)]]
 			created := now.Add(-time.Duration(age * float64(time.Hour)))
 			sla := time.Duration(t.Config.SLAHours[prio]) * time.Hour
 			due := created.Add(sla)
-			inc := &Incident{ID: len(t.Incidents) + 1, Title: sd.titles[service][rnd.Intn(len(sd.titles[service]))],
+			inc := &domain.Incident{ID: len(t.Incidents) + 1, Title: sd.titles[service][rnd.Intn(len(sd.titles[service]))],
 				Service: service, Priority: prio, Status: t.Config.States[rnd.Intn(len(t.Config.States)-1)],
 				Fields: map[string]string{}, CreatedBy: 1 + rnd.Intn(len(t.Users)), AssigneeID: rnd.Intn(4), CreatedAt: created, DueAt: &due}
 			for _, f := range t.Config.Fields {
@@ -238,8 +143,8 @@ func seed() []*Tenant {
 		}
 
 		for _, sp := range sd.problems {
-			p := &Problem{ID: len(t.Problems) + 1, Title: sp.title, Description: sp.desc, Service: sp.service, OwnerID: 2}
-			var linked []*Incident
+			p := &domain.Problem{ID: len(t.Problems) + 1, Title: sp.title, Description: sp.desc, Service: sp.service, OwnerID: 2}
+			var linked []*domain.Incident
 			for _, inc := range t.Incidents {
 				if inc.Service == sp.service {
 					inc.ProblemID = p.ID
@@ -252,21 +157,21 @@ func seed() []*Tenant {
 				if at.After(now) {
 					at = now
 				}
-				p.History = append(p.History, Event{at, kind, text, by})
+				p.History = append(p.History, domain.Event{At: at, Kind: kind, Text: text, UserID: by})
 				at = at.Add(26 * time.Hour)
 			}
-			p.CreatedAt, p.Status = at, Identificado
+			p.CreatedAt, p.Status = at, domain.Identificado
 			step("", "Problema creado desde 2 incidentes recurrentes", 1)
 			if sp.stage >= 1 {
-				p.Status = EnAnalisis
+				p.Status = domain.EnAnalisis
 				step("analisis", "Análisis de causa raíz iniciado", 2)
 			}
 			if sp.stage >= 2 {
-				p.Status, p.RootCause, p.Workaround = ErrorConocido, sp.rootCause, sp.wa
+				p.Status, p.RootCause, p.Workaround = domain.ErrorConocido, sp.rootCause, sp.wa
 				step("conocido", "Registrado como error conocido", 2)
 			}
 			if sp.stage == 3 {
-				p.Status, p.Solution = Resuelto, sp.sol
+				p.Status, p.Solution = domain.Resuelto, sp.sol
 				at = now.Add(-20 * time.Hour)
 				for _, inc := range linked {
 					if inc.ResolvedAt == nil {

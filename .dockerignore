@@ -1,0 +1,5 @@
+.git
+data.json
+data.json.tmp
+*.exe
+README.md
