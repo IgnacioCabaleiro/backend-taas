@@ -3,12 +3,14 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 
 	"taas-backend/internal/domain"
 	"taas-backend/internal/service"
@@ -16,7 +18,6 @@ import (
 
 type Handler struct {
 	svc *service.Services
-	mu  sync.Mutex
 }
 
 // New arma el router con todas las rutas de la API.
@@ -25,9 +26,10 @@ func New(svc *service.Services) http.Handler {
 	mux := http.NewServeMux()
 
 	// Sin sesión: contratar (crear la cuenta), entrar y las plantillas del onboarding.
+	// Signup y login toman el lock adentro del servicio (ver service.Services); las plantillas no lo necesitan.
 	mux.HandleFunc("POST /api/signup", h.signup)
 	mux.HandleFunc("POST /api/login", h.login)
-	mux.HandleFunc("POST /api/logout", h.logout)
+	mux.HandleFunc("POST /api/logout", h.locked(h.logout))
 	mux.HandleFunc("GET /api/templates", h.templates)
 
 	// Con sesión: todo responde con el estado de la cuenta (ver authed).
@@ -53,7 +55,7 @@ func New(svc *service.Services) http.Handler {
 	return h.middleware(mux)
 }
 
-// middleware: CORS, límite de tamaño del body y exclusión mutua.
+// middleware: CORS y límite de tamaño del body.
 func (h *Handler) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// ponytail: CORS abierto, es una demo local (la sesión va en un header, no en cookies). Restringir el origen antes de exponerlo.
@@ -64,13 +66,26 @@ func (h *Handler) middleware(next http.Handler) http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-		// ponytail: un lock global por request, porque el repositorio JSON comparte las cuentas en memoria.
-		// Con una base de datos real esto se va y la concurrencia la maneja la base.
-		h.mu.Lock()
-		defer h.mu.Unlock()
+		// El body se lee entero antes de tomar el lock: un cliente lento no puede trabar al resto.
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+		if err != nil {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "el pedido es demasiado grande o llegó incompleto"})
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
 		next.ServeHTTP(w, r)
 	})
+}
+
+// locked ejecuta el handler con el lock global tomado.
+// ponytail: un lock global por request, porque el repositorio JSON comparte las cuentas en memoria.
+// Con una base de datos real esto se va y la concurrencia la maneja la base.
+func (h *Handler) locked(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		h.svc.Lock()
+		defer h.svc.Unlock()
+		next(w, r)
+	}
 }
 
 // authedFunc es un handler que ya sabe de qué cuenta y de qué usuario viene el pedido.
@@ -79,7 +94,7 @@ type authedFunc func(r *http.Request, tenantID, userID int) error
 // authed autentica, ejecuta fn y responde siempre con el estado completo de la cuenta
 // tal como lo ve ese usuario: el front no tiene que volver a consultar.
 func (h *Handler) authed(fn authedFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+	return h.locked(func(w http.ResponseWriter, r *http.Request) {
 		tenantID, userID, err := h.svc.Auth.Authenticate(bearer(r))
 		if err == nil {
 			err = fn(r, tenantID, userID)
@@ -94,7 +109,7 @@ func (h *Handler) authed(fn authedFunc) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, view)
-	}
+	})
 }
 
 func bearer(r *http.Request) string {
@@ -104,13 +119,20 @@ func bearer(r *http.Request) string {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Printf("escribir la respuesta: %v", err)
+	}
 }
 
 // fail traduce un error de dominio a su código HTTP. Lo que no reconoce es un error de validación.
+// Los errores internos se registran en el log y al cliente le llega un mensaje genérico.
 func fail(w http.ResponseWriter, err error) {
 	status := http.StatusBadRequest
 	switch {
+	case errors.Is(err, domain.ErrInternal):
+		log.Printf("error interno: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "algo falló de nuestro lado, probá de nuevo en un rato"})
+		return
 	case errors.Is(err, domain.ErrNotFound):
 		status = http.StatusNotFound
 	case errors.Is(err, domain.ErrForbidden):

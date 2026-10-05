@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"slices"
 	"strings"
 
 	"taas-backend/internal/domain"
@@ -104,7 +105,7 @@ func (s *Setup) SetConfig(tenantID, by int, c domain.Config) error {
 		if err := c.Validate(); err != nil {
 			return err
 		}
-		// Misma cantidad de ítems que antes = se renombraron en el lugar: los datos existentes siguen al nombre nuevo.
+		// Ítems renombrados en el lugar: los datos existentes siguen al nombre nuevo (ver renames).
 		states, services := renames(t.Config.States, c.States), renames(t.Config.Services, c.Services)
 		t.Config = c
 		for _, p := range t.Problems {
@@ -130,11 +131,15 @@ func (s *Setup) SetConfig(tenantID, by int, c domain.Config) error {
 	})
 }
 
+// renames detecta los ítems renombrados en el lugar: con la misma cantidad de ítems, la posición
+// cuyo nombre viejo ya no está y cuyo nombre nuevo no existía antes. Reordenar no es renombrar.
 func renames(old, new []string) map[string]string {
 	m := map[string]string{}
 	if len(old) == len(new) {
 		for i := range old {
-			m[old[i]] = new[i]
+			if old[i] != new[i] && !slices.Contains(new, old[i]) && !slices.Contains(old, new[i]) {
+				m[old[i]] = new[i]
+			}
 		}
 	}
 	return m

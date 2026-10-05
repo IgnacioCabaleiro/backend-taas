@@ -231,3 +231,89 @@ func TestUsersAndRoles(t *testing.T) {
 		t.Fatal("el usuario eliminado no puede seguir usando su sesión")
 	}
 }
+
+// Un pedido que falla a mitad de camino no deja la cuenta modificada.
+func TestFailedUpdateLeavesAccountUntouched(t *testing.T) {
+	sv, tn := newAccount(t)
+	p, err := sv.Problems.Create(tid, agent, domain.NewProblem{Title: "p", Service: "VPN"})
+	must(t, err)
+	must(t, sv.Problems.Advance(tid, agent, p.ID, domain.Advance{}))
+	must(t, sv.Problems.Advance(tid, agent, p.ID, domain.Advance{RootCause: "x"}))
+	must(t, sv.Problems.Advance(tid, agent, p.ID, domain.Advance{Solution: "y"}))
+
+	before := len(tn.Incidents)
+	in := vpn("vinculado a un problema resuelto")
+	in.ProblemID = p.ID
+	if _, err := sv.Incidents.Create(tid, agent, in); err == nil || len(tn.Incidents) != before {
+		t.Fatalf("el alta fallida no debe dejar el incidente creado: err=%v, %d -> %d", err, before, len(tn.Incidents))
+	}
+
+	b, _ := sv.Incidents.Create(tid, agent, vpn("b"))
+	who, bad := agent, "No existe"
+	if sv.Incidents.Update(tid, agent, b.ID, domain.IncidentPatch{AssigneeID: &who, Status: &bad}) == nil || b.AssigneeID != 0 {
+		t.Fatalf("con un estado inválido no debe aplicarse el resto del pedido: asignado=%d", b.AssigneeID)
+	}
+}
+
+// Un incidente se puede desvincular de su problema, y queda en el historial.
+func TestUnlinkIncident(t *testing.T) {
+	sv, _ := newAccount(t)
+	a, _ := sv.Incidents.Create(tid, agent, vpn("a"))
+	p, err := sv.Problems.Create(tid, agent, domain.NewProblem{Title: "p", Service: "VPN", IncidentIDs: []int{a.ID, a.ID}})
+	must(t, err)
+	if len(p.History) != 1 || p.History[0].Text != "Problema creado desde 1 incidentes recurrentes" {
+		t.Fatalf("los ids repetidos cuentan una sola vez: %+v", p.History)
+	}
+	none := 0
+	must(t, sv.Incidents.Update(tid, agent, a.ID, domain.IncidentPatch{ProblemID: &none}))
+	if a.ProblemID != 0 || p.History[len(p.History)-1].Text != "#1 desvinculado del problema" {
+		t.Fatalf("no se desvinculó: problemId=%d historial=%+v", a.ProblemID, p.History)
+	}
+}
+
+// Reordenar servicios o estados no los renombra: cada incidente conserva el suyo.
+func TestReorderIsNotRename(t *testing.T) {
+	sv, tn := newAccount(t)
+	inc, _ := sv.Incidents.Create(tid, agent, vpn("x"))
+	c := tn.Config
+	c.Services = append([]string{}, c.Services...)
+	c.Services[0], c.Services[1] = c.Services[1], c.Services[0] // VPN <-> Correo
+	must(t, sv.Setup.SetConfig(tid, owner, c))
+	if inc.Service != "VPN" {
+		t.Fatalf("reordenar el catálogo cambió el servicio del incidente a %q", inc.Service)
+	}
+}
+
+// Al eliminar a un usuario, sus problemas pasan al titular.
+func TestDeleteUserReassignsProblems(t *testing.T) {
+	sv, _ := newAccount(t)
+	p, err := sv.Problems.Create(tid, agent, domain.NewProblem{Title: "p", Service: "VPN"})
+	must(t, err)
+	must(t, sv.Accounts.DeleteUser(tid, owner, agent))
+	if p.OwnerID != owner {
+		t.Fatalf("el problema quedó a cargo de un usuario eliminado: %d", p.OwnerID)
+	}
+}
+
+// Quien gestiona problemas ve los incidentes a los que apuntan las sugerencias.
+func TestProblemManagerSeesIncidents(t *testing.T) {
+	sv, tn := newAccount(t)
+	sv.Incidents.Create(tid, agent, vpn("a"))
+	sv.Incidents.Create(tid, agent, vpn("b"))
+	must(t, sv.Accounts.SaveRole(tid, owner, 0, "Analista", []string{domain.PermProblems}))
+	must(t, sv.Accounts.SetUserRole(tid, owner, guest, tn.Roles[len(tn.Roles)-1].ID))
+	v, _ := sv.State.View(tid, guest)
+	if len(v.Suggestions) != 1 || len(v.Incidents) != 2 {
+		t.Fatalf("sugerencias=%d incidentes visibles=%d", len(v.Suggestions), len(v.Incidents))
+	}
+}
+
+// Un email inexistente falla igual que una contraseña incorrecta.
+func TestLoginUnknownEmail(t *testing.T) {
+	sv, _ := newAccount(t)
+	_, errUnknown := sv.Auth.Login("nadie@demo.test", pass)
+	_, errWrong := sv.Auth.Login("agente@demo.test", "otra-clave")
+	if errUnknown == nil || errWrong == nil || errUnknown.Error() != errWrong.Error() {
+		t.Fatalf("los errores tienen que ser iguales: %v / %v", errUnknown, errWrong)
+	}
+}

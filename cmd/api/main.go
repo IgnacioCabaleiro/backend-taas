@@ -3,10 +3,12 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"taas-backend/internal/handler"
 	"taas-backend/internal/repository"
@@ -20,7 +22,9 @@ func main() {
 	reset := flag.Bool("reset", false, "descarta los datos guardados y vuelve a las cuentas de demo")
 	flag.Parse()
 	if *reset {
-		os.Remove(*path)
+		if err := os.Remove(*path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Fatal(err)
+		}
 	}
 
 	tenants, err := repository.NewJSONTenants(*path)
@@ -37,5 +41,14 @@ func main() {
 	svc := service.New(tenants, repository.NewMemorySessions())
 
 	log.Printf("TaaS backend en %s · datos en %s", *addr, *path)
-	log.Fatal(http.ListenAndServe(*addr, handler.New(svc)))
+	// Timeouts: sin ellos, una conexión que nunca termina de mandar el pedido queda abierta para siempre.
+	srv := &http.Server{
+		Addr:              *addr,
+		Handler:           handler.New(svc),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	log.Fatal(srv.ListenAndServe())
 }
