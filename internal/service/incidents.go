@@ -34,10 +34,9 @@ func (s *Incidents) Create(tenantID, by int, in domain.NewIncident) (inc *domain
 		if err != nil {
 			return err
 		}
-		if in.ProblemID != 0 {
-			if _, err := t.Problem(in.ProblemID); err != nil {
-				return err
-			}
+		// Se valida el problema antes de agregar el incidente: si falla, la cuenta no tiene que quedar tocada.
+		if err := linkable(t, in.ProblemID); err != nil {
+			return err
 		}
 		now := time.Now()
 		inc = &domain.Incident{ID: len(t.Incidents) + 1, Title: in.Title, Description: in.Description, Service: in.Service,
@@ -47,9 +46,7 @@ func (s *Incidents) Create(tenantID, by int, in domain.NewIncident) (inc *domain
 			inc.DueAt = &due
 		}
 		t.Incidents = append(t.Incidents, inc)
-		if in.ProblemID != 0 {
-			return link(t, inc, in.ProblemID, by)
-		}
+		link(t, inc, in.ProblemID, by)
 		return nil
 	})
 	return inc, err
@@ -78,31 +75,46 @@ func customFields(defs []domain.Field, in map[string]string) (map[string]string,
 }
 
 // Update cambia el estado, el asignado o el problema de un incidente.
+// Valida todo el pedido antes de aplicar cualquier cambio.
 func (s *Incidents) Update(tenantID, by, id int, in domain.IncidentPatch) error {
 	return s.update(tenantID, by, domain.PermResolve, func(t *domain.Tenant) error {
 		inc, err := t.Incident(id)
 		if err != nil {
 			return err
 		}
-		if in.AssigneeID != nil {
-			if *in.AssigneeID != 0 && t.User(*in.AssigneeID) == nil {
-				return fmt.Errorf("usuario %d: %w", *in.AssigneeID, domain.ErrNotFound)
-			}
-			inc.AssigneeID = *in.AssigneeID
+		if in.AssigneeID != nil && *in.AssigneeID != 0 && t.User(*in.AssigneeID) == nil {
+			return fmt.Errorf("usuario %d: %w", *in.AssigneeID, domain.ErrNotFound)
 		}
 		if in.ProblemID != nil {
-			if err := link(t, inc, *in.ProblemID, by); err != nil {
+			if err := linkable(t, *in.ProblemID); err != nil {
 				return err
 			}
 		}
+		if in.Status != nil && !domain.Has(t.Config.States, *in.Status) {
+			return errors.New("estado inválido")
+		}
+
+		if in.AssigneeID != nil {
+			inc.AssigneeID = *in.AssigneeID
+		}
+		if in.ProblemID != nil {
+			link(t, inc, *in.ProblemID, by)
+		}
 		if in.Status != nil {
-			return setStatus(t, inc, *in.Status, by)
+			setStatus(t, inc, *in.Status, by)
 		}
 		return nil
 	})
 }
 
-func link(t *domain.Tenant, inc *domain.Incident, problemID, by int) error {
+// linkable verifica que se pueda vincular un incidente al problema. 0 significa "sin problema" y siempre se puede.
+func linkable(t *domain.Tenant, problemID int) error {
+	if problemID == 0 {
+		return nil
+	}
+	if !t.Config.Modules.Problems {
+		return errors.New("la gestión de problemas no está activada en esta cuenta")
+	}
 	p, err := t.Problem(problemID)
 	if err != nil {
 		return err
@@ -110,20 +122,30 @@ func link(t *domain.Tenant, inc *domain.Incident, problemID, by int) error {
 	if p.Status == domain.Resuelto {
 		return errors.New("el problema ya está resuelto")
 	}
-	inc.ProblemID = p.ID
-	p.Log(by, "", "#%d vinculado al problema", inc.ID)
 	return nil
 }
 
-func setStatus(t *domain.Tenant, inc *domain.Incident, status string, by int) error {
-	if !domain.Has(t.Config.States, status) {
-		return errors.New("estado inválido")
+// link vincula (o con 0, desvincula) el incidente y lo deja en el historial. Requiere linkable.
+func link(t *domain.Tenant, inc *domain.Incident, problemID, by int) {
+	if inc.ProblemID == problemID {
+		return
 	}
+	if old, err := t.Problem(inc.ProblemID); err == nil {
+		old.Log(by, "", "#%d desvinculado del problema", inc.ID)
+	}
+	inc.ProblemID = problemID
+	if p, err := t.Problem(problemID); err == nil {
+		p.Log(by, "", "#%d vinculado al problema", inc.ID)
+	}
+}
+
+// setStatus cambia el estado del incidente. Requiere que el estado exista en la configuración.
+func setStatus(t *domain.Tenant, inc *domain.Incident, status string, by int) {
 	wasOpen := inc.ResolvedAt == nil
 	inc.Status = status
 	if status != t.ClosedState() {
 		inc.ResolvedAt = nil
-		return nil
+		return
 	}
 	if wasOpen {
 		now := time.Now()
@@ -132,5 +154,4 @@ func setStatus(t *domain.Tenant, inc *domain.Incident, status string, by int) er
 			p.Log(by, "", "#%d resuelto con workaround", inc.ID)
 		}
 	}
-	return nil
 }

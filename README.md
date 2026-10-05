@@ -66,7 +66,7 @@ Salvo alta, login y plantillas, todo requiere `Authorization: Bearer <token>` y 
 | `POST /api/users` · `PUT/DELETE /api/users/{id}` | hasta 5 usuarios además del titular | `config` |
 | `POST /api/roles` · `PUT/DELETE /api/roles/{id}` | roles con permisos a medida | `config` |
 | `POST /api/incidents` | crea un incidente | `crear` |
-| `POST /api/incidents/{id}` | cambia estado, asignado o problema | `resolver` |
+| `POST /api/incidents/{id}` | cambia estado, asignado o problema (`problemId: 0` lo desvincula) | `resolver` |
 | `POST /api/problems` · `/{id}/advance` · `/{id}/owner` · `/{id}/comments` | gestión de problemas | `problemas` |
 
 Permisos: `panel`, `crear`, `resolver`, `problemas`, `config`.

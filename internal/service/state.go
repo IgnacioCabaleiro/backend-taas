@@ -37,14 +37,15 @@ func (s *State) View(tenantID, me int) (View, error) {
 		u.Hash = ""
 		v.Users = append(v.Users, u)
 	}
-	// Quien solo reporta ve sus propios incidentes; el resto requiere resolver tickets o ver el panel.
-	all := t.Can(me, domain.PermResolve) || t.Can(me, domain.PermPanel)
+	// Quien solo reporta ve sus propios incidentes. Para ver todos hace falta resolver tickets, ver el panel
+	// o gestionar problemas (las sugerencias y los problemas apuntan a incidentes de cualquiera).
+	all := t.Can(me, domain.PermResolve) || t.Can(me, domain.PermPanel) || t.Can(me, domain.PermProblems)
 	for _, inc := range t.Incidents {
 		if all || inc.CreatedBy == me {
 			v.Incidents = append(v.Incidents, inc)
 		}
 	}
-	if t.Config.Modules.Problems && (all || t.Can(me, domain.PermProblems)) {
+	if t.Config.Modules.Problems && all {
 		v.Problems = t.Problems
 	}
 	if t.Can(me, domain.PermProblems) {

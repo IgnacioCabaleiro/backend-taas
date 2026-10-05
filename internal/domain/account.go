@@ -11,6 +11,8 @@ var (
 	ErrNotFound     = errors.New("no encontrado")
 	ErrForbidden    = errors.New("tu rol no permite hacer esto")
 	ErrUnauthorized = errors.New("iniciá sesión para continuar")
+	// ErrInternal: falla del servidor (por ejemplo, al guardar). Se responde 500 sin el detalle.
+	ErrInternal = errors.New("error interno")
 )
 
 // Permisos: lo que el titular decide que cada rol puede ver y hacer.
