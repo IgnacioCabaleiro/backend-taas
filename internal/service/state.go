@@ -1,12 +1,9 @@
 package service
 
-import (
-	"taas-backend/internal/domain"
-	"taas-backend/internal/repository"
-)
+import "taas-backend/internal/domain"
 
 // State arma lo que ve un usuario de su cuenta.
-type State struct{ tenants repository.Tenants }
+type State struct{ base }
 
 // View es la cuenta tal como la ve el usuario logueado: sin contraseñas y recortada según sus permisos.
 type View struct {
@@ -26,7 +23,12 @@ type View struct {
 }
 
 func (s *State) View(tenantID, me int) (View, error) {
+	s.mu.Lock()
 	t, err := s.tenants.Get(tenantID)
+	if err == nil {
+		t = t.Clone() // la vista se usa fuera del lock
+	}
+	s.mu.Unlock()
 	if err != nil {
 		return View{}, err
 	}

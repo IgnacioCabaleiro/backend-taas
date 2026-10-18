@@ -10,18 +10,15 @@ import (
 	"fmt"
 	"net/mail"
 	"strings"
-	"sync"
 
 	"taas-backend/internal/domain"
 	"taas-backend/internal/repository"
 )
 
 // Auth: contratación (alta de la cuenta), ingreso y sesiones.
-// Signup y Login toman el lock de Services por su cuenta (ver Services); el resto corre con él ya tomado.
 type Auth struct {
-	tenants  repository.Tenants
+	base
 	sessions repository.Sessions
-	mu       sync.Locker
 }
 
 // Signup es la contratación: crea la cuenta del cliente con su titular. La configuración
@@ -30,14 +27,14 @@ func (a *Auth) Signup(company, name, email, password string) (string, error) {
 	if company = strings.TrimSpace(company); company == "" {
 		return "", errors.New("falta el nombre de la empresa")
 	}
-	var hash string
-	if len(password) >= minPassword { // si es corta, credentials la rechaza: no vale la pena derivarla
-		hash = HashPassword(password) // fuera del lock: tarda a propósito
+	name, email, err := credentials(name, email, password)
+	if err != nil {
+		return "", err
 	}
+	hash := HashPassword(password) // fuera del lock: tarda a propósito
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	name, email, err := credentials(a.tenants, name, email, password)
-	if err != nil {
+	if err := unique(a.tenants, email); err != nil {
 		return "", err
 	}
 	cfg, _ := templates["otro"].build(domain.Setup{})
@@ -51,8 +48,8 @@ func (a *Auth) Signup(company, name, email, password string) (string, error) {
 }
 
 // dummyHash se compara cuando el email no existe, para que la respuesta tarde lo mismo
-// y no delate qué emails tienen cuenta.
-var dummyHash = HashPassword("taas-dummy-password")
+// y no delate qué emails tienen cuenta. Sirve cualquier valor con el formato sal:clave.
+const dummyHash = "00000000000000000000000000000000:0000000000000000000000000000000000000000000000000000000000000000"
 
 // ponytail: sin límite de intentos. Agregar rate limiting antes de exponerlo a internet.
 func (a *Auth) Login(email, password string) (string, error) {
@@ -64,7 +61,6 @@ func (a *Auth) Login(email, password string) (string, error) {
 	}
 	a.mu.Unlock()
 
-	// La derivación es lenta a propósito: se hace sin el lock para no frenar al resto de los pedidos.
 	if !CheckPassword(hash, password) || userID == 0 {
 		return "", errors.New("email o contraseña incorrectos")
 	}
@@ -86,6 +82,8 @@ func (a *Auth) Authenticate(token string) (tenantID, userID int, err error) {
 	if !ok {
 		return 0, 0, domain.ErrUnauthorized
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	t, err := a.tenants.Get(s.TenantID)
 	if err != nil || t.User(s.UserID) == nil {
 		return 0, 0, domain.ErrUnauthorized
@@ -93,8 +91,8 @@ func (a *Auth) Authenticate(token string) (tenantID, userID int, err error) {
 	return s.TenantID, s.UserID, nil
 }
 
-// credentials valida y normaliza los datos de un usuario nuevo. El email es único en toda la plataforma.
-func credentials(tenants repository.Tenants, name, email, password string) (string, string, error) {
+// credentials valida y normaliza los datos de un usuario nuevo, sin mirar las cuentas (no necesita el lock).
+func credentials(name, email, password string) (string, string, error) {
 	name, email = strings.TrimSpace(name), strings.ToLower(strings.TrimSpace(email))
 	if name == "" {
 		return "", "", errors.New("falta el nombre")
@@ -105,10 +103,14 @@ func credentials(tenants repository.Tenants, name, email, password string) (stri
 	if len(password) < minPassword {
 		return "", "", errors.New("la contraseña tiene que tener al menos 8 caracteres")
 	}
-	if _, u := tenants.FindByEmail(email); u != nil {
-		return "", "", errors.New("ya hay una cuenta con ese email")
-	}
 	return name, email, nil
+}
+
+func unique(tenants repository.Tenants, email string) error {
+	if _, u := tenants.FindByEmail(email); u != nil {
+		return errors.New("ya hay una cuenta con ese email")
+	}
+	return nil
 }
 
 // --- Contraseñas ---

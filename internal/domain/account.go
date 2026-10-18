@@ -2,6 +2,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -58,6 +59,18 @@ type Tenant struct {
 	NextRoleID int         `json:"nextRoleId"`
 	Incidents  []*Incident `json:"incidents"`
 	Problems   []*Problem  `json:"problems"`
+}
+
+func (t *Tenant) Clone() *Tenant {
+	data, err := json.Marshal(t)
+	c := &Tenant{}
+	if err == nil {
+		err = json.Unmarshal(data, c)
+	}
+	if err != nil {
+		panic(fmt.Sprintf("clonar la cuenta %d: %v", t.ID, err))
+	}
+	return c
 }
 
 func (t *Tenant) User(id int) *User {

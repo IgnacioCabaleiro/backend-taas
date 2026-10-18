@@ -1,6 +1,11 @@
 package service_test
 
 import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 
 	"taas-backend/internal/domain"
@@ -82,7 +87,8 @@ func TestProblemLifecycle(t *testing.T) {
 	if a.ResolvedAt == nil || b.Status != "Resuelto" {
 		t.Fatal("resolver el problema debe cerrar sus incidentes")
 	}
-	if sv.Incidents.Update(tid, agent, a.ID, domain.IncidentPatch{ProblemID: &p.ID}) == nil || sv.Incidents.Update(tid, agent, 99, domain.IncidentPatch{}) == nil {
+	c, _ := sv.Incidents.Create(tid, agent, vpn("otro más"))
+	if sv.Incidents.Update(tid, agent, c.ID, domain.IncidentPatch{ProblemID: &p.ID}) == nil || sv.Incidents.Update(tid, agent, 99, domain.IncidentPatch{}) == nil {
 		t.Fatal("no se puede vincular a un problema resuelto ni tocar un incidente inexistente")
 	}
 }
@@ -315,5 +321,80 @@ func TestLoginUnknownEmail(t *testing.T) {
 	_, errWrong := sv.Auth.Login("agente@demo.test", "otra-clave")
 	if errUnknown == nil || errWrong == nil || errUnknown.Error() != errWrong.Error() {
 		t.Fatalf("los errores tienen que ser iguales: %v / %v", errUnknown, errWrong)
+	}
+}
+
+// Reenviar el problema que el incidente ya tiene no lo revalida: el resto del cambio se aplica.
+func TestResendLinkedProblem(t *testing.T) {
+	sv, _ := newAccount(t)
+	a, _ := sv.Incidents.Create(tid, agent, vpn("a"))
+	p, err := sv.Problems.Create(tid, agent, domain.NewProblem{Title: "p", Service: "VPN", IncidentIDs: []int{a.ID}})
+	must(t, err)
+	must(t, sv.Problems.Advance(tid, agent, p.ID, domain.Advance{}))
+	must(t, sv.Problems.Advance(tid, agent, p.ID, domain.Advance{RootCause: "x"}))
+	must(t, sv.Problems.Advance(tid, agent, p.ID, domain.Advance{Solution: "y"}))
+
+	enCurso := "En curso"
+	if err := sv.Incidents.Update(tid, agent, a.ID, domain.IncidentPatch{Status: &enCurso, ProblemID: &p.ID}); err != nil || a.Status != enCurso {
+		t.Fatalf("el problema no cambió, no debe rechazarse por estar resuelto: %q %v", a.Status, err)
+	}
+}
+
+// Si no se puede guardar, la cuenta queda como estaba: reintentar no duplica nada.
+func TestFailedSaveLeavesAccountUntouched(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.json")
+	tenants, err := repository.NewJSONTenants(path)
+	must(t, err)
+	sv := service.New(tenants, repository.NewMemorySessions())
+	_, err = sv.Auth.Signup("Demo", "Titular", "titular@demo.test", pass)
+	must(t, err)
+
+	must(t, os.Mkdir(path+".tmp", 0o700)) // hace fallar la escritura
+	inc := domain.NewIncident{Title: "x", Service: "Sistemas", Priority: "alta"}
+	if _, err := sv.Incidents.Create(tid, owner, inc); !errors.Is(err, domain.ErrInternal) {
+		t.Fatalf("esperaba un error interno, obtuve %v", err)
+	}
+	if tn, _ := tenants.Get(tid); len(tn.Incidents) != 0 {
+		t.Fatal("el incidente que no se pudo guardar no debe quedar en memoria")
+	}
+	if _, err := sv.Auth.Signup("Otra", "Titular", "otra@demo.test", pass); !errors.Is(err, domain.ErrInternal) {
+		t.Fatalf("esperaba un error interno, obtuve %v", err)
+	}
+
+	must(t, os.Remove(path+".tmp"))
+	_, err = sv.Incidents.Create(tid, owner, inc)
+	must(t, err)
+	_, err = sv.Auth.Signup("Otra", "Titular", "otra@demo.test", pass)
+	must(t, err)
+	if tn, _ := tenants.Get(tid); len(tn.Incidents) != 1 {
+		t.Fatalf("el reintento debe crear un solo incidente, hay %d", len(tn.Incidents))
+	}
+}
+
+// Los casos de uso se pueden llamar en paralelo.
+func TestConcurrentUse(t *testing.T) {
+	sv, _ := newAccount(t)
+	token, err := sv.Auth.Login("agente@demo.test", pass)
+	must(t, err)
+	var wg sync.WaitGroup
+	for i := range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, _, err := sv.Auth.Authenticate(token); err != nil {
+				t.Error(err)
+			}
+			if _, err := sv.Incidents.Create(tid, agent, vpn(fmt.Sprint(i))); err != nil {
+				t.Error(err)
+			}
+			if _, err := sv.State.View(tid, owner); err != nil {
+				t.Error(err)
+			}
+			sv.Auth.Logout("token-que-no-existe")
+		}()
+	}
+	wg.Wait()
+	if v, _ := sv.State.View(tid, owner); len(v.Incidents) != 10 {
+		t.Fatalf("esperaba 10 incidentes, hay %d", len(v.Incidents))
 	}
 }

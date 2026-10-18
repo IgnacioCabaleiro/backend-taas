@@ -25,6 +25,11 @@ func DefaultRoles() []domain.Role {
 }
 
 func (a *Accounts) AddUser(tenantID, by int, name, email, password string, roleID int) error {
+	name, email, err := credentials(name, email, password)
+	if err != nil {
+		return err
+	}
+	hash := HashPassword(password) // fuera del lock: tarda a propósito
 	return a.update(tenantID, by, domain.PermConfig, func(t *domain.Tenant) error {
 		if len(t.Users)-1 >= domain.MaxUsers {
 			return fmt.Errorf("tu plan incluye hasta %d usuarios además del titular", domain.MaxUsers)
@@ -32,11 +37,10 @@ func (a *Accounts) AddUser(tenantID, by int, name, email, password string, roleI
 		if t.Role(roleID) == nil {
 			return errors.New("elegí un rol")
 		}
-		name, email, err := credentials(a.tenants, name, email, password)
-		if err != nil {
+		if err := unique(a.tenants, email); err != nil {
 			return err
 		}
-		t.Users = append(t.Users, domain.User{ID: t.NextUserID, Name: name, Email: email, RoleID: roleID, Hash: HashPassword(password)})
+		t.Users = append(t.Users, domain.User{ID: t.NextUserID, Name: name, Email: email, RoleID: roleID, Hash: hash})
 		t.NextUserID++
 		return nil
 	})
@@ -74,7 +78,7 @@ func (a *Accounts) DeleteUser(tenantID, by, userID int) error {
 					inc.AssigneeID = 0 // sus tickets abiertos vuelven a la cola
 				}
 			}
-	
+
 			for _, p := range t.Problems {
 				if p.OwnerID == userID {
 					p.OwnerID = t.OwnerID

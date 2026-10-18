@@ -26,10 +26,9 @@ func New(svc *service.Services) http.Handler {
 	mux := http.NewServeMux()
 
 	// Sin sesión: contratar (crear la cuenta), entrar y las plantillas del onboarding.
-	// Signup y login toman el lock adentro del servicio (ver service.Services); las plantillas no lo necesitan.
 	mux.HandleFunc("POST /api/signup", h.signup)
 	mux.HandleFunc("POST /api/login", h.login)
-	mux.HandleFunc("POST /api/logout", h.locked(h.logout))
+	mux.HandleFunc("POST /api/logout", h.logout)
 	mux.HandleFunc("GET /api/templates", h.templates)
 
 	// Con sesión: todo responde con el estado de la cuenta (ver authed).
@@ -66,26 +65,19 @@ func (h *Handler) middleware(next http.Handler) http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		// El body se lee entero antes de tomar el lock: un cliente lento no puede trabar al resto.
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
-		if err != nil {
-			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "el pedido es demasiado grande o llegó incompleto"})
+		var tooLarge *http.MaxBytesError
+		switch {
+		case errors.As(err, &tooLarge):
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "el pedido es demasiado grande"})
+			return
+		case err != nil:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "el pedido llegó incompleto"})
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		next.ServeHTTP(w, r)
 	})
-}
-
-// locked ejecuta el handler con el lock global tomado.
-// ponytail: un lock global por request, porque el repositorio JSON comparte las cuentas en memoria.
-// Con una base de datos real esto se va y la concurrencia la maneja la base.
-func (h *Handler) locked(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		h.svc.Lock()
-		defer h.svc.Unlock()
-		next(w, r)
-	}
 }
 
 // authedFunc es un handler que ya sabe de qué cuenta y de qué usuario viene el pedido.
@@ -94,7 +86,7 @@ type authedFunc func(r *http.Request, tenantID, userID int) error
 // authed autentica, ejecuta fn y responde siempre con el estado completo de la cuenta
 // tal como lo ve ese usuario: el front no tiene que volver a consultar.
 func (h *Handler) authed(fn authedFunc) http.HandlerFunc {
-	return h.locked(func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		tenantID, userID, err := h.svc.Auth.Authenticate(bearer(r))
 		if err == nil {
 			err = fn(r, tenantID, userID)
@@ -109,7 +101,7 @@ func (h *Handler) authed(fn authedFunc) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, view)
-	})
+	}
 }
 
 func bearer(r *http.Request) string {

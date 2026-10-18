@@ -85,7 +85,7 @@ func (s *Incidents) Update(tenantID, by, id int, in domain.IncidentPatch) error 
 		if in.AssigneeID != nil && *in.AssigneeID != 0 && t.User(*in.AssigneeID) == nil {
 			return fmt.Errorf("usuario %d: %w", *in.AssigneeID, domain.ErrNotFound)
 		}
-		if in.ProblemID != nil {
+		if in.ProblemID != nil && *in.ProblemID != inc.ProblemID {
 			if err := linkable(t, *in.ProblemID); err != nil {
 				return err
 			}

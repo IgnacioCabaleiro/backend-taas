@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"taas-backend/internal/repository"
@@ -46,5 +47,15 @@ func TestBodyTooLarge(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/login", strings.NewReader(strings.Repeat("x", 2<<20))))
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("esperaba 413, obtuve %d", rec.Code)
+	}
+}
+
+func TestBodyIncomplete(t *testing.T) {
+	tenants, _ := repository.NewJSONTenants("")
+	h := New(service.New(tenants, repository.NewMemorySessions()))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/login", iotest.ErrReader(io.ErrUnexpectedEOF)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("esperaba 400, obtuve %d", rec.Code)
 	}
 }
