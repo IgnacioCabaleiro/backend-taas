@@ -10,7 +10,6 @@ import (
 	"taas-backend/internal/repository"
 )
 
-
 type Services struct {
 	Auth      *Auth
 	Accounts  *Accounts
