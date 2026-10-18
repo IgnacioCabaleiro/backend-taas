@@ -74,7 +74,7 @@ func (a *Accounts) DeleteUser(tenantID, by, userID int) error {
 					inc.AssigneeID = 0 // sus tickets abiertos vuelven a la cola
 				}
 			}
-			// Los problemas que tenía a cargo pasan al titular: un problema siempre tiene un responsable.
+	
 			for _, p := range t.Problems {
 				if p.OwnerID == userID {
 					p.OwnerID = t.OwnerID

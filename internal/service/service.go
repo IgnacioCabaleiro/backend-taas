@@ -10,9 +10,6 @@ import (
 	"taas-backend/internal/repository"
 )
 
-// Services agrupa los casos de uso. Su mutex protege las cuentas y sesiones en memoria:
-// la capa HTTP lo toma en cada pedido (Lock/Unlock), salvo login y alta, que lo manejan
-// adentro para no derivar contraseñas (lento a propósito) con todo el servidor bloqueado.
 type Services struct {
 	sync.Mutex
 	Auth      *Auth

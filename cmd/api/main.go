@@ -41,7 +41,7 @@ func main() {
 	svc := service.New(tenants, repository.NewMemorySessions())
 
 	log.Printf("TaaS backend en %s · datos en %s", *addr, *path)
-	// Timeouts: sin ellos, una conexión que nunca termina de mandar el pedido queda abierta para siempre.
+	// Timeouts: para evitar cuelges, validar si estan bien los tiempos
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           handler.New(svc),
