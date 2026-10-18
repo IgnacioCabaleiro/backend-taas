@@ -2,6 +2,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -11,6 +12,8 @@ var (
 	ErrNotFound     = errors.New("no encontrado")
 	ErrForbidden    = errors.New("tu rol no permite hacer esto")
 	ErrUnauthorized = errors.New("iniciá sesión para continuar")
+	// ErrInternal: responde 500 sin el detalle.
+	ErrInternal = errors.New("Servicio no disponible")
 )
 
 // Permisos: lo que el titular decide que cada rol puede ver y hacer.
@@ -56,6 +59,18 @@ type Tenant struct {
 	NextRoleID int         `json:"nextRoleId"`
 	Incidents  []*Incident `json:"incidents"`
 	Problems   []*Problem  `json:"problems"`
+}
+
+func (t *Tenant) Clone() *Tenant {
+	data, err := json.Marshal(t)
+	c := &Tenant{}
+	if err == nil {
+		err = json.Unmarshal(data, c)
+	}
+	if err != nil {
+		panic(fmt.Sprintf("clonar la cuenta %d: %v", t.ID, err))
+	}
+	return c
 }
 
 func (t *Tenant) User(id int) *User {

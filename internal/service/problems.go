@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -31,21 +32,29 @@ func (s *Problems) Create(tenantID, by int, in domain.NewProblem) (p *domain.Pro
 		if !domain.Has(t.Config.Services, in.Service) {
 			return errors.New("elegí un servicio del catálogo")
 		}
+		ids := []int{}
 		for _, id := range in.IncidentIDs {
 			if _, err := t.Incident(id); err != nil {
 				return err
 			}
+			if !slices.Contains(ids, id) {
+				ids = append(ids, id)
+			}
 		}
 		p = &domain.Problem{ID: len(t.Problems) + 1, Title: title, Description: in.Description, Service: in.Service,
 			Status: domain.Identificado, OwnerID: by, CreatedAt: time.Now()}
-		if len(in.IncidentIDs) > 0 {
-			p.Log(by, "", "Problema creado desde %d incidentes recurrentes", len(in.IncidentIDs))
+		if len(ids) > 0 {
+			p.Log(by, "", "Problema creado desde %d incidentes recurrentes", len(ids))
 		} else {
 			p.Log(by, "", "Problema creado manualmente")
 		}
 		t.Problems = append(t.Problems, p)
-		for _, id := range in.IncidentIDs {
-			t.Incidents[id-1].ProblemID = p.ID
+		for _, id := range ids {
+			inc := t.Incidents[id-1]
+			if old, err := t.Problem(inc.ProblemID); err == nil {
+				old.Log(by, "", "#%d pasó al problema P-%d", inc.ID, p.ID)
+			}
+			inc.ProblemID = p.ID
 		}
 		return nil
 	})

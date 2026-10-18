@@ -3,12 +3,14 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 
 	"taas-backend/internal/domain"
 	"taas-backend/internal/service"
@@ -16,7 +18,6 @@ import (
 
 type Handler struct {
 	svc *service.Services
-	mu  sync.Mutex
 }
 
 // New arma el router con todas las rutas de la API.
@@ -53,7 +54,7 @@ func New(svc *service.Services) http.Handler {
 	return h.middleware(mux)
 }
 
-// middleware: CORS, límite de tamaño del body y exclusión mutua.
+// middleware: CORS y límite de tamaño del body.
 func (h *Handler) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// ponytail: CORS abierto, es una demo local (la sesión va en un header, no en cookies). Restringir el origen antes de exponerlo.
@@ -64,11 +65,17 @@ func (h *Handler) middleware(next http.Handler) http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-		// ponytail: un lock global por request, porque el repositorio JSON comparte las cuentas en memoria.
-		// Con una base de datos real esto se va y la concurrencia la maneja la base.
-		h.mu.Lock()
-		defer h.mu.Unlock()
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+		var tooLarge *http.MaxBytesError
+		switch {
+		case errors.As(err, &tooLarge):
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "el pedido es demasiado grande"})
+			return
+		case err != nil:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "el pedido llegó incompleto"})
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
 		next.ServeHTTP(w, r)
 	})
 }
@@ -104,13 +111,20 @@ func bearer(r *http.Request) string {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Printf("escribir la respuesta: %v", err)
+	}
 }
 
 // fail traduce un error de dominio a su código HTTP. Lo que no reconoce es un error de validación.
+// Los errores internos se registran en el log y al cliente le llega un mensaje genérico.
 func fail(w http.ResponseWriter, err error) {
 	status := http.StatusBadRequest
 	switch {
+	case errors.Is(err, domain.ErrInternal):
+		log.Printf("error interno: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "algo falló de nuestro lado, probá de nuevo en un rato"})
+		return
 	case errors.Is(err, domain.ErrNotFound):
 		status = http.StatusNotFound
 	case errors.Is(err, domain.ErrForbidden):

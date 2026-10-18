@@ -12,7 +12,7 @@ import (
 // JSONTenants guarda todas las cuentas en un archivo que se reescribe entero en cada cambio.
 //
 // ponytail: alcanza para una demo. Las cuentas viven en memoria y Get devuelve el puntero
-// compartido, así que la exclusión mutua la pone el handler (un lock por request).
+// compartido, así que la exclusión mutua la pone el servicio (ver service.Services).
 // Pasar a MySQL/Postgres con tenant_id cuando haya datos reales: solo cambia esta implementación.
 type JSONTenants struct {
 	path    string // "" = solo en memoria (tests)
@@ -25,14 +25,25 @@ func NewJSONTenants(path string) (*JSONTenants, error) {
 	if path == "" {
 		return r, nil
 	}
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return r, nil
-	}
-	if err != nil {
+	if err := r.load(); err != nil {
 		return nil, err
 	}
-	return r, json.Unmarshal(data, &r.tenants)
+	return r, nil
+}
+
+func (r *JSONTenants) load() error {
+	var tenants []*domain.Tenant
+	data, err := os.ReadFile(r.path)
+	if err == nil {
+		err = json.Unmarshal(data, &tenants)
+	} else if errors.Is(err, os.ErrNotExist) {
+		err = nil
+	}
+	if err != nil {
+		return err
+	}
+	r.tenants = tenants
+	return nil
 }
 
 func (r *JSONTenants) Empty() bool { return len(r.tenants) == 0 }
@@ -60,14 +71,23 @@ func (r *JSONTenants) Create(t *domain.Tenant) error {
 	r.tenants = append(r.tenants, t)
 	return r.flush()
 }
-
-// Save persiste la cuenta. Como Get devuelve el puntero en memoria, alcanza con volcar el archivo.
 func (r *JSONTenants) Save(*domain.Tenant) error { return r.flush() }
 
+// flush: si falla la escritura toma lo utlimo en mem, evitamos block
 func (r *JSONTenants) flush() error {
 	if r.path == "" {
 		return nil
 	}
+	if err := r.write(); err != nil {
+		if lerr := r.load(); lerr != nil {
+			return errors.Join(err, fmt.Errorf("volver a lo guardado: %w", lerr))
+		}
+		return err
+	}
+	return nil
+}
+
+func (r *JSONTenants) write() error {
 	data, err := json.MarshalIndent(r.tenants, "", " ")
 	if err != nil {
 		return err
