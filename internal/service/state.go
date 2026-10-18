@@ -1,6 +1,11 @@
 package service
 
-import "taas-backend/internal/domain"
+import (
+	"fmt"
+	"time"
+
+	"taas-backend/internal/domain"
+)
 
 // State arma lo que ve un usuario de su cuenta.
 type State struct{ base }
@@ -25,6 +30,11 @@ type View struct {
 func (s *State) View(tenantID, me int) (View, error) {
 	s.mu.Lock()
 	t, err := s.tenants.Get(tenantID)
+	if err == nil && t.AutoClose(time.Now()) > 0 { // barrido de cierre automático (ver base.modify)
+		if err = s.tenants.Save(t); err != nil {
+			err = fmt.Errorf("guardar la cuenta %d: %v: %w", t.ID, err, domain.ErrInternal)
+		}
+	}
 	if err == nil {
 		t = t.Clone() // la vista se usa fuera del lock
 	}
@@ -41,10 +51,14 @@ func (s *State) View(tenantID, me int) (View, error) {
 	}
 	// Quien solo reporta ve sus propios incidentes. Para ver todos hace falta resolver tickets, ver el panel
 	// o gestionar problemas (las sugerencias y los problemas apuntan a incidentes de cualquiera).
+	// Quien solo reporta tampoco ve las notas internas de trabajo, solo las respuestas.
 	all := t.Can(me, domain.PermResolve) || t.Can(me, domain.PermPanel) || t.Can(me, domain.PermProblems)
 	for _, inc := range t.Incidents {
-		if all || inc.CreatedBy == me {
+		switch {
+		case all:
 			v.Incidents = append(v.Incidents, inc)
+		case inc.CreatedBy == me:
+			v.Incidents = append(v.Incidents, withoutNotes(inc))
 		}
 	}
 	if t.Config.Modules.Problems && all {
@@ -54,4 +68,16 @@ func (s *State) View(tenantID, me int) (View, error) {
 		v.Suggestions = Suggestions(t)
 	}
 	return v, nil
+}
+
+// withoutNotes devuelve una copia del incidente sin las notas internas: la vista no toca la cuenta.
+func withoutNotes(inc *domain.Incident) *domain.Incident {
+	c := *inc
+	c.History = []domain.Event{}
+	for _, e := range inc.History {
+		if e.Kind != domain.EvNote {
+			c.History = append(c.History, e)
+		}
+	}
+	return &c
 }

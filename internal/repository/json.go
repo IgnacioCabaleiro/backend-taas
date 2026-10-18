@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"taas-backend/internal/domain"
 )
@@ -28,6 +29,9 @@ func NewJSONTenants(path string) (*JSONTenants, error) {
 	if err := r.load(); err != nil {
 		return nil, err
 	}
+	if err := r.autoClose(); err != nil {
+		return nil, fmt.Errorf("guardar el cierre automático: %w", err)
+	}
 	return r, nil
 }
 
@@ -42,8 +46,24 @@ func (r *JSONTenants) load() error {
 	if err != nil {
 		return err
 	}
+	for _, t := range tenants {
+		t.Normalize() // datos guardados por una versión anterior
+	}
 	r.tenants = tenants
 	return nil
+}
+
+// autoClose hace el barrido de cierre automático de todas las cuentas recién cargadas y lo guarda si cerró algo
+// (después, cada pedido barre su cuenta: ver service.base.modify).
+func (r *JSONTenants) autoClose() error {
+	n := 0
+	for _, t := range r.tenants {
+		n += t.AutoClose(time.Now())
+	}
+	if n == 0 {
+		return nil
+	}
+	return r.flush()
 }
 
 func (r *JSONTenants) Empty() bool { return len(r.tenants) == 0 }

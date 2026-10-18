@@ -41,20 +41,28 @@ func (s *Problems) Create(tenantID, by int, in domain.NewProblem) (p *domain.Pro
 				ids = append(ids, id)
 			}
 		}
+		now := time.Now()
 		p = &domain.Problem{ID: len(t.Problems) + 1, Title: title, Description: in.Description, Service: in.Service,
-			Status: domain.Identificado, OwnerID: by, CreatedAt: time.Now()}
-		if len(ids) > 0 {
-			p.Log(by, "", "Problema creado desde %d incidentes recurrentes", len(ids))
-		} else {
-			p.Log(by, "", "Problema creado manualmente")
-		}
+			Status: domain.Identificado, OwnerID: by, CreatedAt: now}
 		t.Problems = append(t.Problems, p)
+		// Crear el problema vincula también los incidentes cerrados (por ejemplo, desde una sugerencia):
+		// es la única forma de vincular un cerrado, y solo cambia su problema y su historial.
+		linked := 0
 		for _, id := range ids {
 			inc := t.Incidents[id-1]
 			if old, err := t.Problem(inc.ProblemID); err == nil {
 				old.Log(by, "", "#%d pasó al problema P-%d", inc.ID, p.ID)
+				inc.Log(now, by, domain.EvProblem, "Desvinculado del problema P-%d", old.ID)
 			}
 			inc.ProblemID = p.ID
+			inc.Log(now, by, domain.EvProblem, "Vinculado al problema P-%d", p.ID)
+			linked++
+		}
+		// El historial del problema arranca con su creación, contando los incidentes que quedaron vinculados.
+		if linked > 0 {
+			p.Log(by, "", "Problema creado desde %d incidentes recurrentes", linked)
+		} else {
+			p.Log(by, "", "Problema creado manualmente")
 		}
 		return nil
 	})
@@ -84,15 +92,19 @@ func (s *Problems) Advance(tenantID, by, id int, in domain.Advance) error {
 				return errors.New("falta la solución definitiva")
 			}
 			p.Solution, p.Status = in.Solution, domain.Resuelto
-			closed := 0
+			// La solución definitiva resuelve los incidentes abiertos del problema (con la pausa cerrada, si la tenían).
+			// Quedan resueltos, sin cerrar: se cierran a mano o solos, como cualquier otro.
+			resolved, now := 0, time.Now()
+			note := fmt.Sprintf("Resuelto por el problema P-%d: %s", p.ID, strings.TrimSpace(in.Solution))
 			for _, inc := range t.Incidents {
 				if inc.ProblemID == p.ID && inc.ResolvedAt == nil {
-					now := time.Now()
-					inc.Status, inc.ResolvedAt = t.ClosedState(), &now
-					closed++
+					from := inc.Status
+					setStatus(t, inc, t.ResolvedState(), now)
+					resolve(t, inc, from, "solucionado", note, by, now)
+					resolved++
 				}
 			}
-			p.Log(by, "resuelto", "Resuelto · %d incidentes cerrados", closed)
+			p.Log(by, "resuelto", "Resuelto · %d incidentes resueltos", resolved)
 		default:
 			return errors.New("el problema ya está resuelto")
 		}

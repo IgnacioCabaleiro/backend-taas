@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"taas-backend/internal/domain"
 	"taas-backend/internal/repository"
@@ -73,9 +74,11 @@ func (a *Accounts) DeleteUser(tenantID, by, userID int) error {
 				continue
 			}
 			t.Users = append(t.Users[:i], t.Users[i+1:]...)
+			now := time.Now()
 			for _, inc := range t.Incidents {
 				if inc.AssigneeID == userID && inc.ResolvedAt == nil {
 					inc.AssigneeID = 0 // sus tickets abiertos vuelven a la cola
+					inc.Log(now, by, domain.EvAssigned, "Sin asignar (se eliminó a %s)", u.Name)
 				}
 			}
 

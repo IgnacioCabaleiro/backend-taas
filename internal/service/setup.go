@@ -4,6 +4,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"time"
 
 	"taas-backend/internal/domain"
 )
@@ -31,12 +32,18 @@ func (t Template) build(in domain.Setup) (domain.Config, error) {
 		c.Services = in.Services
 	}
 	c.States = append([]string{}, c.States...)
+	c.PauseStates = append([]string{}, c.PauseStates...)
 	if !in.Team {
-		c.States = []string{c.States[0], c.States[len(c.States)-1]} // sin pasos intermedios: abrir y cerrar
+		// Sin pasos intermedios: abrir y cerrar. Tampoco quedan estados en los que pausar el SLA.
+		c.States = []string{c.States[0], c.States[len(c.States)-1]}
+		c.PauseStates = []string{}
 	}
-	c.SLAHours = map[string]int{}
+	c.SLAHours, c.ResponseHours = map[string]int{}, map[string]int{}
 	for k, v := range t.Config.SLAHours {
 		c.SLAHours[k] = v
+	}
+	for k, v := range t.Config.ResponseHours {
+		c.ResponseHours[k] = v
 	}
 	c.Fields = []domain.Field{}
 	if in.Fields {
@@ -102,18 +109,36 @@ func (s *Setup) Finish(tenantID, by int) error {
 
 func (s *Setup) SetConfig(tenantID, by int, c domain.Config) error {
 	return s.update(tenantID, by, domain.PermConfig, func(t *domain.Tenant) error {
+		// Los estados de pausa se validan después de renombrarlos: pueden venir con el nombre viejo de un estado renombrado.
+		pause := c.PauseStates
+		c.PauseStates = nil
 		if err := c.Validate(); err != nil {
 			return err
 		}
 		// Ítems renombrados en el lugar: los datos existentes siguen al nombre nuevo (ver renames).
 		states, services := renames(t.Config.States, c.States), renames(t.Config.Services, c.Services)
+		c.PauseStates = []string{}
+		for _, p := range pause {
+			p = strings.TrimSpace(p)
+			if n, ok := states[p]; ok {
+				p = n
+			}
+			c.PauseStates = append(c.PauseStates, p)
+		}
+		if err := c.ValidatePauseStates(); err != nil {
+			return err
+		}
+
 		t.Config = c
 		for _, p := range t.Problems {
 			if n, ok := services[p.Service]; ok {
 				p.Service = n
 			}
 		}
-		// Incidentes que quedaron en un estado eliminado: vuelven al inicial (o al de cierre si ya estaban resueltos).
+		// Incidentes que quedaron en un estado eliminado: vuelven al inicial (o al de resolución si ya estaban resueltos
+		// o cerrados: el servicio y el estado de un cerrado se siguen migrando para que apunten a la configuración vigente).
+		// Después se recalcula la pausa de los abiertos: se detiene o se reanuda según el estado en el que quedaron.
+		now := time.Now()
 		for _, inc := range t.Incidents {
 			if n, ok := services[inc.Service]; ok {
 				inc.Service = n
@@ -122,10 +147,14 @@ func (s *Setup) SetConfig(tenantID, by int, c domain.Config) error {
 				inc.Status = n
 			}
 			if inc.ResolvedAt != nil {
-				inc.Status = t.ClosedState()
-			} else if !domain.Has(c.States[:len(c.States)-1], inc.Status) {
+				inc.Status = t.ResolvedState()
+				continue
+			}
+			if !domain.Has(c.States[:len(c.States)-1], inc.Status) {
+				inc.Log(now, by, domain.EvStatus, "De %s a %s (se eliminó el estado %s)", inc.Status, c.States[0], inc.Status)
 				inc.Status = c.States[0]
 			}
+			inc.SyncPause(c.PauseStates, now)
 		}
 		return nil
 	})
