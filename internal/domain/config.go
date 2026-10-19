@@ -25,14 +25,26 @@ type Modules struct {
 type Config struct {
 	Modules        Modules        `json:"modules"`
 	Services       []string       `json:"services"`
-	States         []string       `json:"states"`   // estados del incidente, en orden; el último es el de cierre
+	States         []string       `json:"states"`   // flujo del incidente, en orden; el último es el de resolución
 	SLAHours       map[string]int `json:"slaHours"` // horas para resolver, por prioridad
 	Fields         []Field        `json:"fields"`   // campos propios del incidente
 	RecurrenceMin  int            `json:"recurrenceMin"`
 	RecurrenceDays int            `json:"recurrenceDays"`
+	ResponseHours  map[string]int `json:"responseHours"` // horas para la primera respuesta, por prioridad
+	// Estados en los que el reloj del SLA de resolución se detiene (por ejemplo, esperando al solicitante).
+	// Nunca el inicial ni el de resolución: el reloj corre desde el registro hasta la resolución.
+	PauseStates   []string `json:"pauseStates"`
+	AutoCloseDays int      `json:"autoCloseDays"` // días sin actividad tras los que un resuelto se cierra solo
 }
 
+// DefaultAutoCloseDays: el de todas las plantillas y el de las cuentas guardadas antes de que existiera el cierre.
+const DefaultAutoCloseDays = 2
+
 var Priorities = []string{"alta", "media", "baja"}
+
+// DefaultResponseHours: las horas de primera respuesta de la plantilla "otro" (service/templates.go la usa).
+// También son las que reciben las cuentas guardadas antes de que existiera la primera respuesta (ver Tenant.Normalize).
+var DefaultResponseHours = map[string]int{"alta": 4, "media": 8, "baja": 24}
 
 // Setup: lo que el titular responde en el onboarding. No elige "módulos": cuenta cómo trabaja
 // y de ahí sale la configuración inicial, que después puede ajustar desde Configuración.
@@ -96,12 +108,18 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if len(c.States) < 2 {
-		return errors.New("hacen falta al menos dos estados: uno inicial y uno de cierre")
+		return errors.New("hacen falta al menos dos estados: uno inicial y uno de resolución")
 	}
 	for _, p := range Priorities {
 		if c.SLAHours[p] < 1 {
 			return fmt.Errorf("el SLA de prioridad %s tiene que ser de al menos 1 hora", p)
 		}
+		if c.ResponseHours[p] < 1 {
+			return fmt.Errorf("la primera respuesta de prioridad %s tiene que ser de al menos 1 hora", p)
+		}
+	}
+	if c.AutoCloseDays < 1 {
+		return errors.New("el cierre automático necesita al menos 1 día")
 	}
 	keys := []string{}
 	for i := range c.Fields {
@@ -135,6 +153,24 @@ func (c *Config) Validate() error {
 	}
 	if c.RecurrenceMin < 2 || c.RecurrenceDays < 1 {
 		return errors.New("la regla de recurrencia necesita al menos 2 incidentes y 1 día")
+	}
+	return c.ValidatePauseStates()
+}
+
+// ValidatePauseStates normaliza los estados de pausa y verifica que estén en el flujo, sin ser el inicial
+// ni el de resolución. Requiere los estados ya validados (Validate la llama al final).
+func (c *Config) ValidatePauseStates() error {
+	var err error
+	if c.PauseStates, err = clean(c.PauseStates, "estado de pausa"); err != nil {
+		return err
+	}
+	for _, s := range c.PauseStates {
+		if !Has(c.States, s) {
+			return fmt.Errorf("el estado de pausa %s no está en el flujo", s)
+		}
+		if s == c.States[0] || s == c.States[len(c.States)-1] {
+			return fmt.Errorf("%s no puede pausar el SLA: el reloj corre desde el registro hasta la resolución", s)
+		}
 	}
 	return nil
 }

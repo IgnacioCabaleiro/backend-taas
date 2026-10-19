@@ -1,12 +1,14 @@
 package service_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"taas-backend/internal/domain"
 	"taas-backend/internal/repository"
@@ -56,7 +58,7 @@ func TestProblemLifecycle(t *testing.T) {
 	a, err := sv.Incidents.Create(tid, agent, vpn("no anda"))
 	must(t, err)
 	b, _ := sv.Incidents.Create(tid, agent, vpn("no anda de nuevo"))
-	if a.Status != "Abierto" || a.DueAt.Sub(a.CreatedAt).Hours() != 4 {
+	if a.Status != "Nuevo" || a.DueAt.Sub(a.CreatedAt).Hours() != 4 {
 		t.Fatalf("estado inicial o SLA mal: %s %v", a.Status, a.DueAt.Sub(a.CreatedAt))
 	}
 
@@ -147,7 +149,7 @@ func TestOnboarding(t *testing.T) {
 	// Trabaja solo, sin plazos ni recurrencias: lo mínimo.
 	must(t, sv.Setup.Onboard(tid, owner, domain.Setup{Template: "salud"}))
 	c := tn.Config
-	if len(c.States) != 2 || len(c.Fields) != 0 || c.Modules.SLA || c.Modules.Problems || tn.Industry != "Salud" {
+	if len(c.States) != 2 || len(c.PauseStates) != 0 || len(c.Fields) != 0 || c.Modules.SLA || c.Modules.Problems || tn.Industry != "Salud" {
 		t.Fatalf("sin equipo, plazos ni datos propios no debe haber flujo, SLA, campos ni problemas: %+v", c)
 	}
 
@@ -275,6 +277,9 @@ func TestUnlinkIncident(t *testing.T) {
 	if a.ProblemID != 0 || p.History[len(p.History)-1].Text != "#1 desvinculado del problema" {
 		t.Fatalf("no se desvinculó: problemId=%d historial=%+v", a.ProblemID, p.History)
 	}
+	if e := last(a); e.Kind != domain.EvProblem || e.Text != "Desvinculado del problema P-1" {
+		t.Fatalf("el incidente también lo registra: %+v", a.History)
+	}
 }
 
 // Reordenar servicios o estados no los renombra: cada incidente conserva el suyo.
@@ -334,9 +339,9 @@ func TestResendLinkedProblem(t *testing.T) {
 	must(t, sv.Problems.Advance(tid, agent, p.ID, domain.Advance{RootCause: "x"}))
 	must(t, sv.Problems.Advance(tid, agent, p.ID, domain.Advance{Solution: "y"}))
 
-	enCurso := "En curso"
-	if err := sv.Incidents.Update(tid, agent, a.ID, domain.IncidentPatch{Status: &enCurso, ProblemID: &p.ID}); err != nil || a.Status != enCurso {
-		t.Fatalf("el problema no cambió, no debe rechazarse por estar resuelto: %q %v", a.Status, err)
+	who := agent
+	if err := sv.Incidents.Update(tid, agent, a.ID, domain.IncidentPatch{AssigneeID: &who, ProblemID: &p.ID}); err != nil || a.AssigneeID != agent {
+		t.Fatalf("el problema no cambió, no debe rechazarse por estar resuelto: asignado=%d %v", a.AssigneeID, err)
 	}
 }
 
@@ -396,5 +401,550 @@ func TestConcurrentUse(t *testing.T) {
 	wg.Wait()
 	if v, _ := sv.State.View(tid, owner); len(v.Incidents) != 10 {
 		t.Fatalf("esperaba 10 incidentes, hay %d", len(v.Incidents))
+	}
+}
+
+// --- Ciclo de vida del incidente ---
+
+var (
+	nuevo    = "Nuevo"
+	enCurso  = "En curso"
+	resuelto = "Resuelto"
+)
+
+// resolve es el pedido que resuelve un incidente con código y nota.
+func resolve(code, note string) domain.IncidentPatch {
+	return domain.IncidentPatch{Status: &resuelto, ResolutionCode: code, ResolutionNote: note}
+}
+
+func last(inc *domain.Incident) domain.Event { return inc.History[len(inc.History)-1] }
+
+// idle hace como si el incidente no tuviera actividad desde hace d: lleva a ese momento la resolución y
+// todos los eventos posteriores (el historial sigue en orden).
+func idle(inc *domain.Incident, d time.Duration) {
+	cut := time.Now().Add(-d)
+	if inc.ResolvedAt != nil && inc.ResolvedAt.After(cut) {
+		inc.ResolvedAt = &cut
+	}
+	for i := range inc.History {
+		if inc.History[i].At.After(cut) {
+			inc.History[i].At = cut
+		}
+	}
+}
+
+const day = 24 * time.Hour
+
+// Registro, asignación y vinculación quedan en el historial del incidente.
+func TestIncidentHistory(t *testing.T) {
+	sv, _ := newAccount(t)
+	p, err := sv.Problems.Create(tid, agent, domain.NewProblem{Title: "p", Service: "VPN"})
+	must(t, err)
+	in := vpn("x")
+	in.AssigneeID, in.ProblemID = agent, p.ID
+	inc, err := sv.Incidents.Create(tid, agent, in)
+	must(t, err)
+	got := []string{}
+	for _, e := range inc.History {
+		got = append(got, e.Kind+": "+e.Text)
+	}
+	want := fmt.Sprint([]string{"creado: Incidente registrado", "asignado: Asignado a Agente", "problema: Vinculado al problema P-1"})
+	if fmt.Sprint(got) != want || !inc.History[0].At.Equal(inc.CreatedAt) {
+		t.Fatalf("historial del registro: %v", got)
+	}
+	none := 0
+	must(t, sv.Incidents.Update(tid, agent, inc.ID, domain.IncidentPatch{AssigneeID: &none, Status: &enCurso}))
+	if n := len(inc.History); inc.History[n-2].Text != "Sin asignar" || inc.History[n-1].Text != "De Nuevo a En curso" {
+		t.Fatalf("faltan el cambio de asignado o de estado: %+v", inc.History)
+	}
+}
+
+// Resolver exige código y nota y deja un solo evento; si falta algo no se aplica nada del pedido.
+// Un resuelto no cambia de estado.
+func TestResolveRequiresCodeAndNote(t *testing.T) {
+	sv, tn := newAccount(t)
+	inc, _ := sv.Incidents.Create(tid, agent, vpn("x"))
+	if got := inc.ResponseDueAt.Sub(inc.CreatedAt); got != time.Duration(tn.Config.ResponseHours["alta"])*time.Hour {
+		t.Fatalf("vencimiento de la primera respuesta: %v", got)
+	}
+	who, before := agent, len(inc.History)
+	for _, p := range []domain.IncidentPatch{resolve("", "se reinició"), resolve("solucionado", "  "), resolve("inventado", "se reinició")} {
+		p.AssigneeID = &who
+		if sv.Incidents.Update(tid, agent, inc.ID, p) == nil {
+			t.Fatalf("debe fallar sin código válido o sin nota: %+v", p)
+		}
+	}
+	if inc.Status != nuevo || inc.ResolvedAt != nil || inc.AssigneeID != 0 || len(inc.History) != before {
+		t.Fatalf("el pedido fallido modificó el incidente: %+v", inc)
+	}
+
+	must(t, sv.Incidents.Update(tid, agent, inc.ID, resolve("solucionado", " se reinició ")))
+	if inc.ResolvedAt == nil || inc.ClosedAt != nil || inc.ResolutionCode != "solucionado" || inc.ResolutionNote != "se reinició" ||
+		len(inc.History) != before+1 || last(inc).Kind != domain.EvResolved || last(inc).Text != "De Nuevo a Resuelto · Solucionado: se reinició" {
+		t.Fatalf("resolución mal registrada (un solo evento, sin cerrar): %+v", inc)
+	}
+	err := sv.Incidents.Update(tid, agent, inc.ID, domain.IncidentPatch{Status: &enCurso})
+	if err == nil || err.Error() != "el incidente está resuelto: reabrilo para seguir trabajando" || inc.Status != resuelto {
+		t.Fatalf("un resuelto no cambia de estado: %v", err)
+	}
+	if sv.Incidents.Update(tid, agent, inc.ID, domain.IncidentPatch{Status: &resuelto}) != nil {
+		t.Fatal("reenviar el estado que ya tiene no es un cambio")
+	}
+}
+
+// Duplicado y cancelado resuelven y cierran en el mismo momento; el resto queda resuelto.
+func TestClosingCodes(t *testing.T) {
+	sv, _ := newAccount(t)
+	for _, code := range domain.ResolutionCodes {
+		inc, _ := sv.Incidents.Create(tid, agent, vpn(code))
+		must(t, sv.Incidents.Update(tid, agent, inc.ID, resolve(code, "nota")))
+		if e := inc.History[1]; e.Kind != domain.EvResolved || e.Text != "De Nuevo a Resuelto · "+domain.ResolutionLabels[code]+": nota" || inc.ResolutionCode != code {
+			t.Fatalf("%s: el evento lleva la etiqueta y resolutionCode el código: %q %q", code, e.Text, inc.ResolutionCode)
+		}
+		closing := code == "duplicado" || code == "cancelado"
+		if closing != inc.Closed() || (closing && !inc.ClosedAt.Equal(*inc.ResolvedAt)) {
+			t.Fatalf("%s: closedAt=%v resolvedAt=%v", code, inc.ClosedAt, inc.ResolvedAt)
+		}
+		if n := len(inc.History); closing && (inc.History[n-2].Kind != domain.EvResolved || last(inc).Kind != domain.EvClosed || last(inc).Text != "Cerrado por Agente") {
+			t.Fatalf("%s: esperaba los eventos resuelto y cerrado: %+v", code, inc.History)
+		}
+	}
+}
+
+// Reabrir: solo quien resuelve, con motivo, solo un resuelto (no un abierto ni un cerrado). Un solo evento y libera la retención.
+func TestReopen(t *testing.T) {
+	sv, _ := newAccount(t)
+	mine, _ := sv.Incidents.Create(tid, guest, vpn("mío"))
+	due := *mine.DueAt
+	if err := sv.Incidents.Reopen(tid, agent, mine.ID, "sigue"); err == nil || errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("un incidente abierto no se reabre (400): %v", err)
+	}
+	must(t, sv.Incidents.Update(tid, agent, mine.ID, resolve("solucionado", "ok")))
+	if err := sv.Incidents.Reopen(tid, guest, mine.ID, "volvió a pasar"); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("quien solo reporta no reabre: %v", err)
+	}
+	if sv.Incidents.Reopen(tid, agent, mine.ID, "  ") == nil {
+		t.Fatal("el motivo es obligatorio")
+	}
+	must(t, sv.Incidents.Comment(tid, guest, mine.ID, "sigue sin andar", true))
+	before := len(mine.History)
+	must(t, sv.Incidents.Reopen(tid, agent, mine.ID, "volvió a pasar"))
+	if mine.Status != nuevo || mine.ResolvedAt != nil || mine.ResolutionCode != "" || mine.ResolutionNote != "" ||
+		mine.ReopenCount != 1 || mine.AutoCloseHold || !mine.DueAt.Equal(due) || len(mine.History) != before+1 ||
+		last(mine).Kind != domain.EvReopened || last(mine).Text != "De Resuelto a Nuevo: volvió a pasar" {
+		t.Fatalf("reapertura mal aplicada: %+v", mine)
+	}
+
+	must(t, sv.Incidents.Update(tid, agent, mine.ID, resolve("solucionado", "ok")))
+	must(t, sv.Incidents.Close(tid, agent, mine.ID))
+	if err := sv.Incidents.Reopen(tid, agent, mine.ID, "x"); err != domain.ErrClosed || mine.ResolvedAt == nil {
+		t.Fatalf("un cerrado no se reabre: %v", err)
+	}
+}
+
+// Cerrar: solo quien resuelve y solo un resuelto.
+func TestClose(t *testing.T) {
+	sv, _ := newAccount(t)
+	inc, _ := sv.Incidents.Create(tid, guest, vpn("x"))
+	if err := sv.Incidents.Close(tid, agent, inc.ID); err == nil || errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("un abierto no se cierra (400): %v", err)
+	}
+	must(t, sv.Incidents.Update(tid, agent, inc.ID, resolve("solucionado", "ok")))
+	if err := sv.Incidents.Close(tid, guest, inc.ID); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("quien solo reporta no cierra: %v", err)
+	}
+	must(t, sv.Incidents.Close(tid, agent, inc.ID))
+	if e := last(inc); inc.ClosedAt == nil || !inc.ClosedAt.Equal(e.At) || e.Kind != domain.EvClosed || e.Text != "Cerrado por Agente" || e.UserID != agent {
+		t.Fatalf("cierre mal registrado: %+v", inc)
+	}
+	if err := sv.Incidents.Close(tid, agent, inc.ID); err != domain.ErrClosed {
+		t.Fatalf("un cerrado no se vuelve a cerrar: %v", err)
+	}
+}
+
+// Un cerrado es de solo lectura: ningún pedido sobre el incidente lo modifica. Crear un problema sí lo vincula.
+func TestClosedIsReadOnly(t *testing.T) {
+	sv, _ := newAccount(t)
+	inc, _ := sv.Incidents.Create(tid, guest, vpn("x"))
+	must(t, sv.Incidents.Update(tid, agent, inc.ID, resolve("duplicado", "es otro")))
+	p, err := sv.Problems.Create(tid, agent, domain.NewProblem{Title: "p", Service: "VPN"})
+	must(t, err)
+	before := fmt.Sprintf("%+v", *inc)
+	who := agent
+	for name, err := range map[string]error{
+		"asignado":  sv.Incidents.Update(tid, agent, inc.ID, domain.IncidentPatch{AssigneeID: &who}),
+		"estado":    sv.Incidents.Update(tid, agent, inc.ID, domain.IncidentPatch{Status: &nuevo}),
+		"problema":  sv.Incidents.Update(tid, agent, inc.ID, domain.IncidentPatch{ProblemID: &p.ID}),
+		"respuesta": sv.Incidents.Comment(tid, guest, inc.ID, "hola", true),
+		"nota":      sv.Incidents.Comment(tid, agent, inc.ID, "hola", false),
+		"reabrir":   sv.Incidents.Reopen(tid, agent, inc.ID, "x"),
+		"cerrar":    sv.Incidents.Close(tid, agent, inc.ID),
+	} {
+		if err != domain.ErrClosed {
+			t.Errorf("%s sobre un cerrado: esperaba %q, obtuve %v", name, domain.ErrClosed, err)
+		}
+	}
+	if after := fmt.Sprintf("%+v", *inc); after != before {
+		t.Fatalf("el cerrado cambió:\n%s\n%s", before, after)
+	}
+
+	// La excepción: crear un problema lo vincula (sigue cerrado), y resolver el problema no lo toca.
+	q, err := sv.Problems.Create(tid, agent, domain.NewProblem{Title: "q", Service: "VPN", IncidentIDs: []int{inc.ID}})
+	must(t, err)
+	if inc.ProblemID != q.ID || !inc.Closed() || last(inc).Kind != domain.EvProblem || q.History[0].Text != "Problema creado desde 1 incidentes recurrentes" {
+		t.Fatalf("crear el problema vincula el cerrado: %+v / %+v", inc, q.History)
+	}
+	before = fmt.Sprintf("%+v", *inc)
+	must(t, sv.Problems.Advance(tid, agent, q.ID, domain.Advance{}))
+	must(t, sv.Problems.Advance(tid, agent, q.ID, domain.Advance{RootCause: "x"}))
+	must(t, sv.Problems.Advance(tid, agent, q.ID, domain.Advance{Solution: "y"}))
+	if after := fmt.Sprintf("%+v", *inc); after != before || q.History[len(q.History)-1].Text != "Resuelto · 0 incidentes resueltos" {
+		t.Fatalf("resolver el problema no toca sus cerrados:\n%s\n%s", before, after)
+	}
+}
+
+// El cierre automático: tras autoCloseDays sin actividad (el default es 2 en todas las plantillas), con la fecha
+// que correspondía y el evento sin usuario. Cada evento reinicia la cuenta, el retenido no se cierra y se usa el
+// valor vigente de autoCloseDays.
+func TestAutoClose(t *testing.T) {
+	sv, tn := newAccount(t)
+	for _, tpl := range sv.Setup.Templates() {
+		if tpl.Config.AutoCloseDays != 2 {
+			t.Fatalf("plantilla %s: autoCloseDays=%d", tpl.Key, tpl.Config.AutoCloseDays)
+		}
+	}
+	incs := make([]*domain.Incident, 4)
+	for i := range incs {
+		incs[i], _ = sv.Incidents.Create(tid, guest, vpn(fmt.Sprint(i)))
+		must(t, sv.Incidents.Update(tid, agent, incs[i].ID, resolve("solucionado", "ok")))
+	}
+	old, held, active, recent := incs[0], incs[1], incs[2], incs[3]
+	must(t, sv.Incidents.Comment(tid, guest, held.ID, "sigue fallando", true))
+	must(t, sv.Incidents.Comment(tid, agent, active.ID, "lo dejo en observación", false))
+	idle(old, 3*day)
+	idle(held, 5*day)
+	idle(recent, day)
+	// Resuelto hace 3 días, pero con una nota de hace 1: la nota reinició la cuenta.
+	idle(active, 3*day)
+	note := time.Now().Add(-day)
+	active.History[len(active.History)-1].At = note
+
+	if _, err := sv.State.View(tid, owner); err != nil {
+		t.Fatal(err)
+	}
+	if e := last(old); !old.Closed() || !old.ClosedAt.Equal(old.History[len(old.History)-2].At.Add(2*day)) || e.Kind != domain.EvClosed ||
+		e.UserID != 0 || e.Text != "Cerrado automáticamente tras 2 días sin actividad" || !e.At.Equal(*old.ClosedAt) {
+		t.Fatalf("cierre automático mal registrado: %+v", old)
+	}
+	if held.Closed() || recent.Closed() || active.Closed() {
+		t.Fatal("no se cierran los retenidos por quien reportó ni los que tuvieron actividad hace menos de autoCloseDays")
+	}
+
+	// Sin actividad nueva, la cuenta corre desde la nota.
+	note = time.Now().Add(-2*day - time.Hour)
+	active.History[len(active.History)-1].At = note
+	if _, err := sv.State.View(tid, owner); err != nil || !active.Closed() || !active.ClosedAt.Equal(note.Add(2*day)) {
+		t.Fatalf("el cierre se cuenta desde el último evento: %v %v", active.ClosedAt, err)
+	}
+
+	// Con un autoCloseDays menor, el próximo pedido ya cierra el reciente; cualquier pedido barre, no solo la vista.
+	c := tn.Config
+	c.AutoCloseDays = 1
+	must(t, sv.Setup.SetConfig(tid, owner, c))
+	if _, err := sv.Incidents.Create(tid, guest, vpn("barre")); err != nil {
+		t.Fatal(err)
+	}
+	if !recent.Closed() || !recent.ClosedAt.Equal(recent.History[len(recent.History)-2].At.Add(day)) || held.Closed() {
+		t.Fatalf("barrido con el valor nuevo: reciente=%v retenido=%v", recent.ClosedAt, held.ClosedAt)
+	}
+	c.AutoCloseDays = 0
+	if sv.Setup.SetConfig(tid, owner, c) == nil {
+		t.Fatal("autoCloseDays tiene que ser de al menos 1 día")
+	}
+}
+
+// El barrido se guarda, aunque el pedido que lo disparó falle.
+func TestAutoClosePersists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.json")
+	tenants, err := repository.NewJSONTenants(path)
+	must(t, err)
+	sv := service.New(tenants, repository.NewMemorySessions())
+	_, err = sv.Auth.Signup("Demo", "Titular", "titular@demo.test", pass)
+	must(t, err)
+	tn, _ := tenants.Get(tid)
+	for range 2 {
+		inc, err := sv.Incidents.Create(tid, owner, domain.NewIncident{Title: "x", Service: "Sistemas", Priority: "alta"})
+		must(t, err)
+		must(t, sv.Incidents.Update(tid, owner, inc.ID, domain.IncidentPatch{Status: &resuelto, ResolutionCode: "solucionado", ResolutionNote: "ok"}))
+	}
+	saved := func(id int) bool {
+		var data []domain.Tenant
+		raw, _ := os.ReadFile(path)
+		must(t, json.Unmarshal(raw, &data))
+		return data[0].Incidents[id-1].ClosedAt != nil
+	}
+
+	idle(tn.Incidents[0], 3*day)
+	if _, err := sv.State.View(tid, owner); err != nil || !saved(1) {
+		t.Fatalf("el barrido de la vista no se guardó: %v", err)
+	}
+	idle(tn.Incidents[1], 3*day)
+	bad := "No existe"
+	if sv.Incidents.Update(tid, owner, 1, domain.IncidentPatch{Status: &bad}) == nil || !saved(2) {
+		t.Fatal("el barrido de un pedido fallido no se guardó")
+	}
+}
+
+// Si quien reportó responde estando resuelto, ya no se cierra solo. Quien atiende no lo retiene.
+func TestReporterReplyHoldsAutoClose(t *testing.T) {
+	sv, _ := newAccount(t)
+	inc, _ := sv.Incidents.Create(tid, guest, vpn("x"))
+	must(t, sv.Incidents.Comment(tid, guest, inc.ID, "antes de resolver", true))
+	must(t, sv.Incidents.Update(tid, agent, inc.ID, resolve("solucionado", "ok")))
+	must(t, sv.Incidents.Comment(tid, agent, inc.ID, "queda resuelto", true))
+	if inc.AutoCloseHold {
+		t.Fatal("solo retiene la respuesta de quien reportó, y solo estando resuelto")
+	}
+	must(t, sv.Incidents.Comment(tid, guest, inc.ID, "a mí me sigue fallando", true))
+	if !inc.AutoCloseHold || last(inc).Kind != domain.EvReply {
+		t.Fatalf("la respuesta de quien reportó en un resuelto lo retiene: %+v", inc)
+	}
+}
+
+// Un incidente nuevo puede continuar uno cerrado: tiene que existir y estar cerrado, y quien solo reporta,
+// relacionarlo con uno suyo. Queda en el historial de los dos.
+func TestRelatedIncident(t *testing.T) {
+	sv, tn := newAccount(t)
+	mine, _ := sv.Incidents.Create(tid, guest, vpn("mío"))
+	theirs, _ := sv.Incidents.Create(tid, agent, vpn("ajeno"))
+	related := func(by, id int) (*domain.Incident, error) {
+		in := vpn("volvió a pasar")
+		in.RelatedIncidentID = id
+		return sv.Incidents.Create(tid, by, in)
+	}
+	for _, id := range []int{mine.ID, 99} {
+		if _, err := related(guest, id); err == nil || errors.Is(err, domain.ErrForbidden) || errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("#%d no está cerrado o no existe (400): %v", id, err)
+		}
+	}
+	for _, inc := range []*domain.Incident{mine, theirs} {
+		must(t, sv.Incidents.Update(tid, agent, inc.ID, resolve("solucionado", "ok")))
+		must(t, sv.Incidents.Close(tid, agent, inc.ID))
+	}
+	count := len(tn.Incidents)
+	if _, err := related(guest, theirs.ID); !errors.Is(err, domain.ErrForbidden) || len(tn.Incidents) != count {
+		t.Fatalf("quien solo reporta no lo relaciona con uno ajeno: %v", err)
+	}
+
+	inc, err := related(guest, mine.ID)
+	must(t, err)
+	if inc.RelatedIncidentID != mine.ID || inc.History[0].Text != fmt.Sprintf("Incidente registrado (relacionado con #%d)", mine.ID) {
+		t.Fatalf("incidente relacionado mal registrado: %+v", inc)
+	}
+	if e := last(mine); e.Kind != domain.EvRelated || e.Text != fmt.Sprintf("Se registró #%d relacionado", inc.ID) || e.UserID != guest {
+		t.Fatalf("el cerrado tiene que registrar la relación: %+v", e)
+	}
+	if _, err := related(agent, mine.ID); err != nil {
+		t.Fatalf("quien resuelve lo relaciona con cualquier cerrado: %v", err)
+	}
+}
+
+// Respuestas y notas: quien atiende publica las dos; quien reportó, solo respuestas en los suyos.
+func TestComments(t *testing.T) {
+	sv, _ := newAccount(t)
+	mine, _ := sv.Incidents.Create(tid, guest, vpn("mío"))
+	other, _ := sv.Incidents.Create(tid, agent, vpn("de otro"))
+
+	must(t, sv.Incidents.Comment(tid, guest, mine.ID, "gracias", true))
+	if e := last(mine); e.Kind != domain.EvReply || e.UserID != guest || mine.FirstResponseAt != nil {
+		t.Fatalf("la respuesta de quien reportó no es la primera respuesta: %+v", mine)
+	}
+	must(t, sv.Incidents.Comment(tid, agent, mine.ID, " lo estoy mirando ", true))
+	if e := last(mine); e.Kind != domain.EvReply || e.Text != "lo estoy mirando" || mine.FirstResponseAt == nil || !mine.FirstResponseAt.Equal(e.At) {
+		t.Fatalf("respuesta mal registrada: %+v", mine)
+	}
+	must(t, sv.Incidents.Comment(tid, agent, mine.ID, "parece el concentrador", false))
+	if last(mine).Kind != domain.EvNote {
+		t.Fatalf("esperaba una nota: %+v", last(mine))
+	}
+
+	before := len(mine.History)
+	if err := sv.Incidents.Comment(tid, guest, mine.ID, "x", false); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("quien reportó no deja notas internas: %v", err)
+	}
+	if err := sv.Incidents.Comment(tid, guest, other.ID, "x", true); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("quien reportó no comenta incidentes ajenos: %v", err)
+	}
+	if err := sv.Incidents.Comment(tid, agent, mine.ID, "  ", true); err == nil || errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("el texto vacío es un error de validación: %v", err)
+	}
+	if len(mine.History) != before {
+		t.Fatal("los comentarios rechazados no deben quedar en el historial")
+	}
+}
+
+// Quien solo reporta no ve las notas internas, y filtrarlas no toca la cuenta.
+func TestViewHidesNotes(t *testing.T) {
+	sv, _ := newAccount(t)
+	mine, _ := sv.Incidents.Create(tid, guest, vpn("mío"))
+	must(t, sv.Incidents.Comment(tid, agent, mine.ID, "interna", false))
+	must(t, sv.Incidents.Comment(tid, agent, mine.ID, "pública", true))
+
+	v, _ := sv.State.View(tid, guest)
+	for _, e := range v.Incidents[0].History {
+		if e.Kind == domain.EvNote {
+			t.Fatal("el solicitante ve una nota interna")
+		}
+	}
+	if len(v.Incidents[0].History) != 2 || len(mine.History) != 3 {
+		t.Fatalf("vista=%d cuenta=%d eventos", len(v.Incidents[0].History), len(mine.History))
+	}
+	if v, _ := sv.State.View(tid, agent); len(v.Incidents[0].History) != 3 {
+		t.Fatal("quien atiende ve las notas")
+	}
+}
+
+// La primera respuesta es la primera respuesta pública de quien atiende, una sola vez.
+// Asignar, cambiar el estado o dejar una nota no cuentan.
+func TestFirstResponse(t *testing.T) {
+	sv, _ := newAccount(t)
+	inc, _ := sv.Incidents.Create(tid, agent, vpn("x"))
+	who := agent
+	must(t, sv.Incidents.Update(tid, agent, inc.ID, domain.IncidentPatch{AssigneeID: &who}))
+	must(t, sv.Incidents.Update(tid, agent, inc.ID, domain.IncidentPatch{Status: &enCurso}))
+	must(t, sv.Incidents.Comment(tid, agent, inc.ID, "interna", false))
+	if inc.FirstResponseAt != nil {
+		t.Fatal("asignar, cambiar el estado o dejar una nota no es responder")
+	}
+	must(t, sv.Incidents.Comment(tid, agent, inc.ID, "hola", true))
+	if inc.FirstResponseAt == nil || !inc.FirstResponseAt.Equal(last(inc).At) {
+		t.Fatal("la respuesta pública de quien atiende es la primera respuesta")
+	}
+	first := *inc.FirstResponseAt
+	must(t, sv.Incidents.Comment(tid, agent, inc.ID, "otra", true))
+	if !inc.FirstResponseAt.Equal(first) {
+		t.Fatal("la primera respuesta se fija una sola vez")
+	}
+}
+
+// pauseIn configura la cuenta con estados de pausa.
+func pauseIn(t *testing.T, sv *service.Services, tn *domain.Tenant, states ...string) {
+	t.Helper()
+	c := tn.Config
+	c.PauseStates = states
+	must(t, sv.Setup.SetConfig(tid, owner, c))
+}
+
+// backdate corre el comienzo de la pausa hacia atrás, como si llevara ese tiempo pausado.
+func backdate(inc *domain.Incident, d time.Duration) time.Time {
+	since := inc.PausedAt.Add(-d)
+	inc.PausedAt = &since
+	return since
+}
+
+// La pausa corre el vencimiento de resolución exactamente lo que duró, también si se resuelve desde la pausa.
+// El de la primera respuesta no se mueve nunca, aunque la respuesta llegue durante la pausa.
+func TestPause(t *testing.T) {
+	sv, tn := newAccount(t)
+	pauseIn(t, sv, tn, enCurso)
+	inc, _ := sv.Incidents.Create(tid, agent, vpn("x"))
+	due, resp := *inc.DueAt, *inc.ResponseDueAt
+
+	must(t, sv.Incidents.Update(tid, agent, inc.ID, domain.IncidentPatch{Status: &enCurso}))
+	if inc.PausedAt == nil || !inc.PausedAt.Equal(last(inc).At) {
+		t.Fatal("al entrar a un estado de pausa el reloj se detiene")
+	}
+	since := backdate(inc, 2*time.Hour)
+	must(t, sv.Incidents.Update(tid, agent, inc.ID, domain.IncidentPatch{Status: &nuevo}))
+	if paused := last(inc).At.Sub(since); inc.PausedAt != nil || inc.DueAt.Sub(due) != paused || !inc.ResponseDueAt.Equal(resp) {
+		t.Fatalf("pausa de %v: dueAt corrió %v, responseDueAt %v -> %v", paused, inc.DueAt.Sub(due), resp, inc.ResponseDueAt)
+	}
+
+	// Primera respuesta durante la pausa, y resolución directa desde la pausa.
+	must(t, sv.Incidents.Update(tid, agent, inc.ID, domain.IncidentPatch{Status: &enCurso}))
+	due, since = *inc.DueAt, backdate(inc, 3*time.Hour)
+	must(t, sv.Incidents.Comment(tid, agent, inc.ID, "hola", true))
+	if inc.PausedAt == nil || inc.FirstResponseAt == nil || !inc.ResponseDueAt.Equal(resp) {
+		t.Fatalf("la respuesta en pausa no mueve su vencimiento: %v -> %v", resp, inc.ResponseDueAt)
+	}
+	must(t, sv.Incidents.Update(tid, agent, inc.ID, resolve("workaround", "vpn2")))
+	if inc.PausedAt != nil || inc.DueAt.Sub(due) != inc.ResolvedAt.Sub(since) || !inc.ResponseDueAt.Equal(resp) {
+		t.Fatalf("resolver desde la pausa: corrió %v, esperaba %v; respuesta %v -> %v",
+			inc.DueAt.Sub(due), inc.ResolvedAt.Sub(since), resp, inc.ResponseDueAt)
+	}
+}
+
+// SetConfig valida los estados de pausa, los renombra con su estado y recalcula la pausa de los abiertos.
+func TestConfigPauseStates(t *testing.T) {
+	sv, tn := newAccount(t)
+	for _, bad := range [][]string{{nuevo}, {resuelto}, {"No existe"}, {enCurso, enCurso}} {
+		_, c, _ := service.BuildConfig("it", service.Full)
+		c.PauseStates = bad
+		if sv.Setup.SetConfig(tid, owner, c) == nil {
+			t.Fatalf("estados de pausa inválidos: %v", bad)
+		}
+	}
+	for _, change := range []func(c *domain.Config){
+		func(c *domain.Config) { c.ResponseHours["media"] = 0 },
+		func(c *domain.Config) { c.ResponseHours = nil },
+		func(c *domain.Config) { c.AutoCloseDays = 0 },
+	} {
+		_, c, _ := service.BuildConfig("it", service.Full)
+		change(&c)
+		if sv.Setup.SetConfig(tid, owner, c) == nil {
+			t.Fatalf("configuración inválida aceptada: %+v", c)
+		}
+	}
+
+	// Renombrar un estado de pausa: llega con el nombre viejo y queda con el nuevo; el incidente que está ahí se pausa.
+	busy, _ := sv.Incidents.Create(tid, agent, vpn("en curso"))
+	must(t, sv.Incidents.Update(tid, agent, busy.ID, domain.IncidentPatch{Status: &enCurso}))
+	_, c, _ := service.BuildConfig("it", service.Full)
+	c.States[1], c.PauseStates = "Esperando", []string{enCurso}
+	must(t, sv.Setup.SetConfig(tid, owner, c))
+	if fmt.Sprint(tn.Config.PauseStates) != "[Esperando]" || busy.Status != "Esperando" || busy.PausedAt == nil {
+		t.Fatalf("pausa=%v estado=%q pausedAt=%v", tn.Config.PauseStates, busy.Status, busy.PausedAt)
+	}
+
+	// Un incidente que queda en un estado de pausa porque el inicial pasa a ser otro.
+	fresh, _ := sv.Incidents.Create(tid, agent, vpn("sin respuesta"))
+	_, c, _ = service.BuildConfig("it", service.Full)
+	c.States, c.PauseStates = []string{"Triage", nuevo, resuelto}, []string{nuevo}
+	must(t, sv.Setup.SetConfig(tid, owner, c))
+	if fresh.Status != nuevo || fresh.PausedAt == nil || busy.Status != "Triage" || busy.PausedAt != nil {
+		t.Fatalf("recalcular la pausa: %q %v · %q %v", fresh.Status, fresh.PausedAt, busy.Status, busy.PausedAt)
+	}
+	due, resp, since := *fresh.DueAt, *fresh.ResponseDueAt, backdate(fresh, time.Hour)
+	c = tn.Config
+	c.PauseStates = []string{}
+	from := time.Now()
+	must(t, sv.Setup.SetConfig(tid, owner, c))
+	to := time.Now()
+	moved := fresh.DueAt.Sub(due)
+	if fresh.PausedAt != nil || moved < from.Sub(since) || moved > to.Sub(since) || !fresh.ResponseDueAt.Equal(resp) {
+		t.Fatalf("al reanudar se corre solo el vencimiento de resolución: %v, respuesta %v -> %v", moved, resp, fresh.ResponseDueAt)
+	}
+}
+
+// La solución definitiva de un problema resuelve sus incidentes con código "solucionado" (sin cerrarlos
+// ni contar como primera respuesta) y cierra su pausa.
+func TestProblemResolvesIncidents(t *testing.T) {
+	sv, tn := newAccount(t)
+	pauseIn(t, sv, tn, enCurso)
+	a, _ := sv.Incidents.Create(tid, agent, vpn("a"))
+	must(t, sv.Incidents.Update(tid, agent, a.ID, domain.IncidentPatch{Status: &enCurso}))
+	p, err := sv.Problems.Create(tid, agent, domain.NewProblem{Title: "p", Service: "VPN", IncidentIDs: []int{a.ID}})
+	must(t, err)
+	if e := last(a); e.Kind != domain.EvProblem || e.Text != "Vinculado al problema P-1" {
+		t.Fatalf("crear el problema desde el incidente lo vincula: %+v", e)
+	}
+	must(t, sv.Problems.Advance(tid, agent, p.ID, domain.Advance{}))
+	must(t, sv.Problems.Advance(tid, agent, p.ID, domain.Advance{RootCause: "licencias"}))
+	must(t, sv.Problems.Advance(tid, agent, p.ID, domain.Advance{Solution: " más licencias "}))
+	if a.Status != resuelto || a.ResolvedAt == nil || a.Closed() || a.ResolutionCode != "solucionado" || a.PausedAt != nil ||
+		a.FirstResponseAt != nil || a.ResolutionNote != "Resuelto por el problema P-1: más licencias" ||
+		last(a).Text != "De En curso a Resuelto · Solucionado: Resuelto por el problema P-1: más licencias" ||
+		a.History[len(a.History)-2].Kind != domain.EvProblem {
+		t.Fatalf("resolución por el problema (un solo evento): %+v", a)
 	}
 }

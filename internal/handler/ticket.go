@@ -25,6 +25,29 @@ func (h *Handler) updateIncident(r *http.Request, tenantID, userID int) error {
 	return h.svc.Incidents.Update(tenantID, userID, pathID(r), in)
 }
 
+func (h *Handler) commentIncident(r *http.Request, tenantID, userID int) error {
+	var in struct {
+		Text   string
+		Public bool
+	}
+	if err := decode(r, &in); err != nil {
+		return err
+	}
+	return h.svc.Incidents.Comment(tenantID, userID, pathID(r), in.Text, in.Public)
+}
+
+func (h *Handler) reopenIncident(r *http.Request, tenantID, userID int) error {
+	var in struct{ Reason string }
+	if err := decode(r, &in); err != nil {
+		return err
+	}
+	return h.svc.Incidents.Reopen(tenantID, userID, pathID(r), in.Reason)
+}
+
+func (h *Handler) closeIncident(r *http.Request, tenantID, userID int) error {
+	return h.svc.Incidents.Close(tenantID, userID, pathID(r))
+}
+
 func (h *Handler) createProblem(r *http.Request, tenantID, userID int) error {
 	var in domain.NewProblem
 	if err := decode(r, &in); err != nil {

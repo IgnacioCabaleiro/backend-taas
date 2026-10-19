@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Errores que la capa HTTP traduce a un código de estado. Cualquier otro error es de validación (400).
@@ -15,6 +16,14 @@ var (
 	// ErrInternal: responde 500 sin el detalle.
 	ErrInternal = errors.New("Servicio no disponible")
 )
+
+// Denied es un ErrForbidden (403) con un motivo propio, para cuando no alcanza con "tu rol no permite hacer esto".
+func Denied(reason string) error { return denied(reason) }
+
+type denied string
+
+func (d denied) Error() string        { return string(d) }
+func (d denied) Is(target error) bool { return target == ErrForbidden }
 
 // Permisos: lo que el titular decide que cada rol puede ver y hacer.
 const (
@@ -73,6 +82,41 @@ func (t *Tenant) Clone() *Tenant {
 	return c
 }
 
+// Normalize completa una cuenta guardada antes de que existiera el ciclo de vida del incidente
+// (lo llama repository.JSONTenants al cargar).
+func (t *Tenant) Normalize() {
+	c := &t.Config
+	if c.ResponseHours == nil {
+		c.ResponseHours = map[string]int{}
+		for k, v := range DefaultResponseHours {
+			c.ResponseHours[k] = v
+		}
+	}
+	if c.PauseStates == nil {
+		c.PauseStates = []string{}
+	}
+	if c.AutoCloseDays == 0 { // ausente: 0 no es un valor válido (ver Config.Validate)
+		c.AutoCloseDays = DefaultAutoCloseDays
+	}
+	for _, inc := range t.Incidents {
+		if inc.History == nil {
+			inc.History = []Event{} // los incidentes viejos no tienen historial: no se inventa
+		}
+	}
+}
+
+// AutoClose hace el barrido de cierre automático de la cuenta (ver Incident.AutoClose) y devuelve cuántos cerró.
+// Se llama de forma perezosa: al cargar la cuenta y al principio de cada pedido.
+func (t *Tenant) AutoClose(now time.Time) int {
+	n := 0
+	for _, inc := range t.Incidents {
+		if inc.AutoClose(t.Config.AutoCloseDays, now) {
+			n++
+		}
+	}
+	return n
+}
+
 func (t *Tenant) User(id int) *User {
 	for i := range t.Users {
 		if t.Users[i].ID == id {
@@ -115,5 +159,6 @@ func (t *Tenant) Problem(id int) (*Problem, error) {
 	return t.Problems[id-1], nil
 }
 
-// ClosedState es el estado de cierre: el último del flujo configurado.
-func (t *Tenant) ClosedState() string { return t.Config.States[len(t.Config.States)-1] }
+// ResolvedState es el estado de resolución: el último del flujo configurado. El cierre no es un estado
+// del flujo sino una etapa aparte (ver Incident.ClosedAt).
+func (t *Tenant) ResolvedState() string { return t.Config.States[len(t.Config.States)-1] }

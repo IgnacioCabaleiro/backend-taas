@@ -37,6 +37,46 @@ docker run -p 8080:8080 -v taas-data:/data taas-backend
 Los datos se guardan en `data.json` (se crea solo; incluye hashes de contraseñas, está en `.gitignore`). En Docker viven en el volumen `/data`.
 Las sesiones viven en memoria: al reiniciar el servidor hay que volver a entrar.
 
+Un `data.json` de una versión anterior se carga igual: a los incidentes sin historial se les pone `history: []`
+(no se inventa), las cuentas sin `responseHours` reciben las de la plantilla "otro", sin `pauseStates` quedan con `[]`
+y sin `autoCloseDays` (o con 0, que no es válido) arrancan con 2. Los incidentes ya resueltos sin código quedan con
+`resolutionCode: ""`. Al cargar se hace el barrido de cierre automático y, si cerró algo, se guarda.
+
+## Ciclo de vida del incidente
+
+Sigue la gestión de incidentes de ITIL 4, en tres etapas:
+
+| Etapa | Cómo se reconoce | Qué pasa |
+|---|---|---|
+| **Abierto** | `resolvedAt` vacío | **registro** (estado inicial) y **diagnóstico** (estados intermedios del flujo configurable) |
+| **Resuelto** | `resolvedAt`, sin `closedAt` | **resolución**: el último estado del flujo, con `resolutionCode` y `resolutionNote` obligatorios. Si el servicio no quedó restablecido, quien gestiona lo **reabre** |
+| **Cerrado** | `closedAt` | **cierre**: a mano o automático tras `autoCloseDays` sin actividad. De solo lectura: si vuelve a pasar, se registra un incidente relacionado (`relatedIncidentId`) |
+
+El cierre no es un estado del flujo: es una etapa aparte. Solo quien tiene `resolver` cambia el estado, resuelve,
+reabre y cierra; quien solo reporta publica respuestas en sus incidentes.
+
+- Códigos de resolución (en el historial, su etiqueta): `solucionado` (Solucionado), `workaround` (Con workaround), `duplicado` (Duplicado), `sin_reproducir` (No se pudo reproducir), `cancelado` (Cancelado). `resolutionCode` guarda el código. `duplicado` y `cancelado` resuelven y cierran en el mismo momento; el resto queda resuelto. Un resuelto no cambia de estado: hay que reabrirlo.
+- **Reapertura** (solo un resuelto): vuelve al estado inicial, borra la resolución, suma `reopenCount` y libera `autoCloseHold`. El `dueAt` original se mantiene (cuenta contra el SLA).
+- **Cierre automático**: un resuelto se cierra solo tras `config.autoCloseDays` días sin actividad (2 por defecto, mínimo 1). Actividad es cualquier evento del historial, incluida la resolución, así que cada evento nuevo reinicia la cuenta: `closedAt` = último evento + esos días, con el evento `cerrado` sin usuario (`userId: 0`, `Cerrado automáticamente tras N días sin actividad`). Si quien lo reportó responde estando resuelto, queda `autoCloseHold: true` y ya no se cierra solo hasta que quien gestiona lo cierre o lo reabra. El barrido es perezoso: al cargar el archivo y al principio de cada pedido autenticado.
+- **Primera respuesta** (`firstResponseAt`): la primera respuesta pública de alguien con `resolver`. Cambiar el estado, asignar o resolver un problema no cuentan. Con el módulo SLA, el registro calcula `responseDueAt` con `config.responseHours`.
+- **Pausa del SLA**: en los estados de `config.pauseStates` el reloj de resolución se detiene (`pausedAt`). Al salir, `dueAt` se corre lo que duró la pausa: el vencimiento guardado ya la descuenta. La pausa nunca mueve `responseDueAt`, que se fija al registrar el incidente.
+- Resolver un problema resuelve (sin cerrar) sus incidentes abiertos con código `solucionado` y la solución como nota; los cerrados no cambian. Un cerrado solo se vincula a un problema al crear el problema (`incidentIds`, por ejemplo desde una sugerencia): cambia su `problemId` y queda el evento en su historial.
+
+Cada paso queda en el `history` del incidente:
+
+| `kind` | Cuándo |
+|---|---|
+| `creado` | al registrarlo (`Incidente registrado`, o `(relacionado con #n)`) |
+| `estado` | en cada cambio de estado del diagnóstico (`De X a Y`) |
+| `asignado` | al cambiar el asignado (`Asignado a Nombre` / `Sin asignar`) |
+| `problema` | al vincularlo o desvincularlo de un problema (en un cerrado, solo al crear el problema) |
+| `respuesta` | comunicación con quien lo reportó: la ven todos |
+| `nota` | nota interna de trabajo: no la ve quien solo reporta |
+| `resuelto` | resolución: `De X a Y · Etiqueta: nota` con la etiqueta del código, por ejemplo `De En curso a Resuelto · No se pudo reproducir: …` (un solo evento) |
+| `reabierto` | reapertura: `De X a Y: motivo` (un solo evento) |
+| `cerrado` | cierre: `Cerrado por Nombre`, o automático con `userId: 0` (`Cerrado automáticamente tras N días sin actividad`) |
+| `relacionado` | en un cerrado, al registrar un incidente que lo continúa (`Se registró #m relacionado`) |
+
 ## Cuentas de demo
 
 Todos los usuarios de demo usan la contraseña definida en `DemoPassword` (`internal/seed/seed.go`).
@@ -50,9 +90,12 @@ Todos los usuarios de demo usan la contraseña definida en `DemoPassword` (`inte
 | | `diego@clinicadelsol.demo`, `paula@clinicadelsol.demo` | Agente |
 | | `tomas@clinicadelsol.demo` | Solicitante |
 
+Las dos cuentas de demo suman al flujo de su plantilla el estado "Esperando al solicitante", justo antes del de
+resolución, como único estado de pausa del SLA (las plantillas no traen estados de pausa).
+
 ## API
 
-Salvo alta, login y plantillas, todo requiere `Authorization: Bearer <token>` y responde con el estado completo de la cuenta, recortado según los permisos del usuario.
+Salvo alta, login y plantillas, todo requiere `Authorization: Bearer <token>` y responde con el estado completo de la cuenta, recortado según los permisos del usuario (quien solo ve sus incidentes no recibe las notas internas).
 
 | Endpoint | Qué hace | Permiso |
 |---|---|---|
@@ -62,11 +105,15 @@ Salvo alta, login y plantillas, todo requiere `Authorization: Bearer <token>` y 
 | `GET /api/state` | estado de la cuenta | sesión |
 | `POST /api/onboarding` | aplica las respuestas del onboarding: rubro, servicios y cómo trabaja el cliente (equipo, plazos, recurrencia, datos propios). Repetible hasta terminar | `config` |
 | `POST /api/onboarding/finish` | da por terminado el onboarding | `config` |
-| `PUT /api/config` | módulos, servicios, estados, campos, SLA y regla de recurrencia | `config` |
+| `PUT /api/config` | módulos, servicios, estados, campos, SLA (resolución y primera respuesta), estados de pausa, días para el cierre automático y regla de recurrencia | `config` |
 | `POST /api/users` · `PUT/DELETE /api/users/{id}` | hasta 5 usuarios además del titular | `config` |
 | `POST /api/roles` · `PUT/DELETE /api/roles/{id}` | roles con permisos a medida | `config` |
-| `POST /api/incidents` | crea un incidente | `crear` |
-| `POST /api/incidents/{id}` | cambia estado, asignado o problema (`problemId: 0` lo desvincula) | `resolver` |
-| `POST /api/problems` · `/{id}/advance` · `/{id}/owner` · `/{id}/comments` | gestión de problemas | `problemas` |
+| `POST /api/incidents` | registra un incidente. `relatedIncidentId` lo relaciona con uno cerrado (quien solo reporta, con uno suyo) | `crear` |
+| `POST /api/incidents/{id}` | cambia estado, asignado o problema (`problemId: 0` lo desvincula). Para resolverlo (pasar al último estado) exige `resolutionCode` y `resolutionNote`. Un cerrado no se modifica | `resolver` |
+| `POST /api/incidents/{id}/comments` | `{text, public}`: respuesta (`public: true`) o nota interna. Quien lo reportó solo publica respuestas en los suyos | `resolver`, o quien lo reportó |
+| `POST /api/incidents/{id}/reopen` | `{reason}`: reabre un incidente resuelto (no uno cerrado) | `resolver` |
+| `POST /api/incidents/{id}/close` | `{}`: cierra un incidente resuelto | `resolver` |
+| `POST /api/problems` · `/{id}/advance` · `/{id}/owner` · `/{id}/comments` | gestión de problemas. Crear un problema con `incidentIds` vincula esos incidentes, también los cerrados | `problemas` |
 
-Permisos: `panel`, `crear`, `resolver`, `problemas`, `config`.
+Permisos: `panel`, `crear`, `resolver`, `problemas`, `config`. Un 403 es "no es tuyo" o "tu rol no puede"; pedir algo
+que la etapa del incidente no permite (por ejemplo, reabrir uno cerrado) es un 400.

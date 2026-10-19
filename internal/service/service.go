@@ -5,6 +5,7 @@ package service
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"taas-backend/internal/domain"
 	"taas-backend/internal/repository"
@@ -41,16 +42,31 @@ type base struct {
 // fn trabaja sobre la cuenta en memoria: tiene que validar todo antes de modificarla,
 // porque si devuelve un error a mitad de camino lo ya cambiado no se deshace.
 func (b base) update(tenantID, by int, perm string, fn func(t *domain.Tenant) error) error {
+	return b.modify(tenantID, func(t *domain.Tenant) error {
+		if !t.Can(by, perm) {
+			return domain.ErrForbidden
+		}
+		return fn(t)
+	})
+}
+
+// modify es update sin el chequeo de permiso, para los casos de uso en los que quién puede hacerlo
+// depende del incidente (por ejemplo, quien lo reportó). fn verifica los permisos antes de modificar nada.
+// Antes de fn hace el barrido de cierre automático, para que fn vea las etapas al día.
+func (b base) modify(tenantID int, fn func(t *domain.Tenant) error) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	t, err := b.tenants.Get(tenantID)
 	if err != nil {
 		return err
 	}
-	if !t.Can(by, perm) {
-		return domain.ErrForbidden
-	}
+	closed := t.AutoClose(time.Now())
 	if err := fn(t); err != nil {
+		// fn no tocó nada (valida antes de modificar), pero el barrido sí: se guarda igual. Si no se puede,
+		// el repositorio vuelve a lo guardado y el próximo pedido barre de nuevo, así que alcanza con el error de fn.
+		if closed > 0 {
+			b.tenants.Save(t)
+		}
 		return err
 	}
 	if err := b.tenants.Save(t); err != nil {
