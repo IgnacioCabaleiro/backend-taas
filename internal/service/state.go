@@ -51,14 +51,15 @@ func (s *State) View(tenantID, me int) (View, error) {
 	}
 	// Quien solo reporta ve sus propios incidentes. Para ver todos hace falta resolver tickets, ver el panel
 	// o gestionar problemas (las sugerencias y los problemas apuntan a incidentes de cualquiera).
-	// Quien solo reporta tampoco ve las notas internas de trabajo, solo las respuestas.
+	// Quien solo reporta tampoco ve las notas internas de trabajo ni los vínculos con problemas (los problemas
+	// son internos del equipo): de la comunicación, solo las respuestas.
 	all := t.Can(me, domain.PermResolve) || t.Can(me, domain.PermPanel) || t.Can(me, domain.PermProblems)
 	for _, inc := range t.Incidents {
 		switch {
 		case all:
 			v.Incidents = append(v.Incidents, inc)
 		case inc.CreatedBy == me:
-			v.Incidents = append(v.Incidents, withoutNotes(inc))
+			v.Incidents = append(v.Incidents, forReporter(inc))
 		}
 	}
 	if t.Config.Modules.Problems && all {
@@ -70,12 +71,13 @@ func (s *State) View(tenantID, me int) (View, error) {
 	return v, nil
 }
 
-// withoutNotes devuelve una copia del incidente sin las notas internas: la vista no toca la cuenta.
-func withoutNotes(inc *domain.Incident) *domain.Incident {
+// forReporter devuelve una copia del incidente para quien solo reporta: sin las notas internas ni los eventos
+// de problema. La vista no toca la cuenta.
+func forReporter(inc *domain.Incident) *domain.Incident {
 	c := *inc
 	c.History = []domain.Event{}
 	for _, e := range inc.History {
-		if e.Kind != domain.EvNote {
+		if e.Kind != domain.EvNote && e.Kind != domain.EvProblem {
 			c.History = append(c.History, e)
 		}
 	}

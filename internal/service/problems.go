@@ -93,9 +93,10 @@ func (s *Problems) Advance(tenantID, by, id int, in domain.Advance) error {
 			}
 			p.Solution, p.Status = in.Solution, domain.Resuelto
 			// La solución definitiva resuelve los incidentes abiertos del problema (con la pausa cerrada, si la tenían).
-			// Quedan resueltos, sin cerrar: se cierran a mano o solos, como cualquier otro.
+			// Quedan resueltos, sin cerrar: se cierran a mano o solos, como cualquier otro. La nota es solo la solución:
+			// quien solo reporta ve la resolución, y los problemas son internos del equipo.
 			resolved, now := 0, time.Now()
-			note := fmt.Sprintf("Resuelto por el problema P-%d: %s", p.ID, strings.TrimSpace(in.Solution))
+			note := strings.TrimSpace(in.Solution)
 			for _, inc := range t.Incidents {
 				if inc.ProblemID == p.ID && inc.ResolvedAt == nil {
 					from := inc.Status
@@ -121,6 +122,9 @@ func (s *Problems) SetOwner(tenantID, by, id, ownerID int) error {
 		u := t.User(ownerID)
 		if u == nil {
 			return fmt.Errorf("usuario %d: %w", ownerID, domain.ErrNotFound)
+		}
+		if !t.Can(ownerID, domain.PermProblems) {
+			return errors.New("el responsable de un problema tiene que poder gestionar problemas")
 		}
 		p.OwnerID = ownerID
 		p.Log(by, "", "Responsable: %s", u.Name)

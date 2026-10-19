@@ -361,7 +361,7 @@ func lifecycle(t *domain.Tenant, rnd *rand.Rand, now time.Time, byProblem map[in
 			by, code, note := agent, "solucionado", solved[rnd.Intn(len(solved))]
 			switch r := rnd.Float64(); {
 			case closedByProblem:
-				by, note = 2, fmt.Sprintf("Resuelto por el problema P-%d: %s", p.ID, p.Solution)
+				by, note = 2, p.Solution // como en la API: la nota es solo la solución
 			case inc == reopened || inc == held:
 			case p != nil && p.Workaround != "" && r < 0.5:
 				code, note = "workaround", fmt.Sprintf("Se aplicó el workaround del problema P-%d: %s", p.ID, p.Workaround)
