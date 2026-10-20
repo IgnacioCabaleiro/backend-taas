@@ -30,8 +30,8 @@ func (s *Incidents) Create(tenantID, by int, in domain.NewIncident) (inc *domain
 		if !domain.Has(domain.Priorities, in.Priority) {
 			return errors.New("prioridad inválida")
 		}
-		if in.AssigneeID != 0 && t.User(in.AssigneeID) == nil {
-			return fmt.Errorf("usuario %d: %w", in.AssigneeID, domain.ErrNotFound)
+		if err := assignable(t, in.AssigneeID); err != nil {
+			return err
 		}
 		fields, err := customFields(t.Config.Fields, in.Fields)
 		if err != nil {
@@ -121,8 +121,10 @@ func (s *Incidents) Update(tenantID, by, id int, in domain.IncidentPatch) error 
 		if inc.Closed() {
 			return domain.ErrClosed
 		}
-		if in.AssigneeID != nil && *in.AssigneeID != 0 && t.User(*in.AssigneeID) == nil {
-			return fmt.Errorf("usuario %d: %w", *in.AssigneeID, domain.ErrNotFound)
+		if in.AssigneeID != nil {
+			if err := assignable(t, *in.AssigneeID); err != nil {
+				return err
+			}
 		}
 		if in.ProblemID != nil && *in.ProblemID != inc.ProblemID {
 			if err := linkable(t, *in.ProblemID); err != nil {
@@ -217,6 +219,7 @@ func (s *Incidents) Comment(tenantID, by, id int, text string, public bool) erro
 
 // Reopen reabre un incidente resuelto (todavía sin cerrar) porque el servicio no quedó restablecido:
 // vuelve al estado inicial y la reapertura cuenta contra el SLA (el vencimiento original no cambia).
+// Si su asignado ya no tiene resolver o ya no existe, queda sin asignar.
 // Un cerrado no se reabre: se registra un incidente relacionado.
 func (s *Incidents) Reopen(tenantID, by, id int, reason string) error {
 	return s.update(tenantID, by, domain.PermResolve, func(t *domain.Tenant) error {
@@ -239,6 +242,18 @@ func (s *Incidents) Reopen(tenantID, by, id int, reason string) error {
 		inc.ReopenCount++
 		inc.AutoCloseHold = false
 		inc.Log(now, by, domain.EvReopened, "De %s a %s: %s", from, inc.Status, reason)
+		// Si quien lo tenía asignado ya no atiende incidentes (perdió resolver mientras estaba resuelto) o ya no
+		// existe (DeleteUser solo desasigna los abiertos), vuelve a la cola: solo se asigna a quien puede atenderlo
+		// (ver assignable).
+		switch u := t.User(inc.AssigneeID); {
+		case inc.AssigneeID == 0:
+		case u == nil:
+			inc.AssigneeID = 0
+			inc.Log(now, by, domain.EvAssigned, "Sin asignar (el usuario asignado ya no existe)")
+		case !t.Can(u.ID, domain.PermResolve):
+			inc.AssigneeID = 0
+			inc.Log(now, by, domain.EvAssigned, "Sin asignar (%s ya no atiende incidentes)", u.Name)
+		}
 		return nil
 	})
 }
@@ -261,7 +276,22 @@ func (s *Incidents) Close(tenantID, by, id int) error {
 	})
 }
 
-// assign cambia el asignado (0 = sin asignar) y lo deja en el historial. Requiere que el usuario exista.
+// assignable verifica que se pueda asignar el incidente al usuario: tiene que existir y poder atender incidentes
+// (resolver). 0 significa "sin asignar" y siempre se puede.
+func assignable(t *domain.Tenant, userID int) error {
+	if userID == 0 {
+		return nil
+	}
+	if t.User(userID) == nil {
+		return fmt.Errorf("usuario %d: %w", userID, domain.ErrNotFound)
+	}
+	if !t.Can(userID, domain.PermResolve) {
+		return errors.New("solo se puede asignar a quien atiende incidentes")
+	}
+	return nil
+}
+
+// assign cambia el asignado (0 = sin asignar) y lo deja en el historial. Requiere assignable.
 func assign(t *domain.Tenant, inc *domain.Incident, userID, by int, now time.Time) {
 	if inc.AssigneeID == userID {
 		return

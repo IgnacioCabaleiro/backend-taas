@@ -12,7 +12,7 @@ import (
 
 // La demo tiene que arrancar con datos coherentes y una sugerencia por cuenta.
 func TestTenants(t *testing.T) {
-	reopened := 0
+	reopened, bySolution := 0, 0
 	for _, tn := range Tenants() {
 		if len(service.Suggestions(tn)) == 0 {
 			t.Errorf("%s: sin sugerencias de recurrencia", tn.Name)
@@ -30,12 +30,24 @@ func TestTenants(t *testing.T) {
 				if inc.ProblemID == p.ID && p.Status == domain.Resuelto && inc.ResolvedAt == nil {
 					t.Errorf("%s P-%d resuelto con #%d abierto", tn.Name, p.ID, inc.ID)
 				}
+				if inc.ProblemID == p.ID && p.Status == domain.Resuelto && inc.ResolutionNote == p.Solution {
+					bySolution++
+				}
+			}
+		}
+		for _, inc := range tn.Incidents {
+			if strings.HasPrefix(inc.ResolutionNote, "Resuelto por el problema") {
+				t.Errorf("%s #%d: la nota de resolución nombra al problema: %q", tn.Name, inc.ID, inc.ResolutionNote)
 			}
 		}
 		reopened += checkLifecycle(t, tn)
 	}
 	if reopened == 0 {
 		t.Error("la demo tiene que mostrar algún incidente reabierto")
+	}
+	// Los incidentes que resuelve un problema llevan solo la solución como nota, como en la API.
+	if bySolution == 0 {
+		t.Error("la demo tiene que mostrar algún incidente resuelto por su problema")
 	}
 }
 

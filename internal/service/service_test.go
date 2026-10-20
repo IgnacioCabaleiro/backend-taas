@@ -783,24 +783,68 @@ func TestComments(t *testing.T) {
 	}
 }
 
-// Quien solo reporta no ve las notas internas, y filtrarlas no toca la cuenta.
-func TestViewHidesNotes(t *testing.T) {
+// Quien solo reporta no ve las notas internas ni los eventos de problema, y filtrarlos no toca la cuenta.
+func TestViewForReporter(t *testing.T) {
 	sv, _ := newAccount(t)
 	mine, _ := sv.Incidents.Create(tid, guest, vpn("mío"))
+	p, err := sv.Problems.Create(tid, agent, domain.NewProblem{Title: "p", Service: "VPN", IncidentIDs: []int{mine.ID}})
+	must(t, err)
+	none := 0
+	must(t, sv.Incidents.Update(tid, agent, mine.ID, domain.IncidentPatch{ProblemID: &none}))
+	must(t, sv.Incidents.Update(tid, agent, mine.ID, domain.IncidentPatch{ProblemID: &p.ID}))
 	must(t, sv.Incidents.Comment(tid, agent, mine.ID, "interna", false))
 	must(t, sv.Incidents.Comment(tid, agent, mine.ID, "pública", true))
+	// creado, vinculado, desvinculado, vinculado, nota y respuesta
+	kinds := func(h []domain.Event) (n map[string]int) {
+		n = map[string]int{}
+		for _, e := range h {
+			n[e.Kind]++
+		}
+		return n
+	}
 
 	v, _ := sv.State.View(tid, guest)
-	for _, e := range v.Incidents[0].History {
-		if e.Kind == domain.EvNote {
-			t.Fatal("el solicitante ve una nota interna")
+	if k := kinds(v.Incidents[0].History); k[domain.EvNote] != 0 || k[domain.EvProblem] != 0 || len(v.Incidents[0].History) != 2 {
+		t.Fatalf("el solicitante ve notas o eventos de problema: %+v", v.Incidents[0].History)
+	}
+	if k := kinds(mine.History); len(mine.History) != 6 || k[domain.EvProblem] != 3 || k[domain.EvNote] != 1 {
+		t.Fatalf("la vista modificó la cuenta: %+v", mine.History)
+	}
+	if v, _ := sv.State.View(tid, agent); len(v.Incidents[0].History) != 6 {
+		t.Fatal("quien atiende ve las notas y los eventos de problema")
+	}
+}
+
+// Solo se asigna un incidente a quien puede atenderlo (resolver). 0 = sin asignar vale siempre.
+func TestAssignRequiresResolver(t *testing.T) {
+	sv, tn := newAccount(t)
+	in := vpn("asignado a quien solo reporta")
+	in.AssigneeID = guest
+	before := len(tn.Incidents)
+	if _, err := sv.Incidents.Create(tid, agent, in); err == nil || errors.Is(err, domain.ErrNotFound) || errors.Is(err, domain.ErrForbidden) || len(tn.Incidents) != before {
+		t.Fatalf("el alta asignada al solicitante es un error de validación y no crea nada: err=%v, %d -> %d", err, before, len(tn.Incidents))
+	}
+	in.AssigneeID = 0
+	if inc, err := sv.Incidents.Create(tid, agent, in); err != nil || inc.AssigneeID != 0 {
+		t.Fatalf("sin asignar siempre se puede: %v", err)
+	}
+	in.AssigneeID = agent
+	inc, err := sv.Incidents.Create(tid, owner, in)
+	if err != nil || inc.AssigneeID != agent {
+		t.Fatalf("al agente se le puede asignar: %v", err)
+	}
+
+	who, enCurso, events := guest, "En curso", len(inc.History)
+	if err := sv.Incidents.Update(tid, agent, inc.ID, domain.IncidentPatch{AssigneeID: &who, Status: &enCurso}); err == nil || errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("el patch asignado al solicitante es un error de validación: %v", err)
+	}
+	if inc.AssigneeID != agent || inc.Status != "Nuevo" || len(inc.History) != events {
+		t.Fatalf("el patch rechazado no debe aplicar nada: asignado=%d estado=%q eventos=%d", inc.AssigneeID, inc.Status, len(inc.History))
+	}
+	for _, who := range []int{0, agent} {
+		if err := sv.Incidents.Update(tid, agent, inc.ID, domain.IncidentPatch{AssigneeID: &who}); err != nil || inc.AssigneeID != who {
+			t.Fatalf("asignar a %d: asignado=%d %v", who, inc.AssigneeID, err)
 		}
-	}
-	if len(v.Incidents[0].History) != 2 || len(mine.History) != 3 {
-		t.Fatalf("vista=%d cuenta=%d eventos", len(v.Incidents[0].History), len(mine.History))
-	}
-	if v, _ := sv.State.View(tid, agent); len(v.Incidents[0].History) != 3 {
-		t.Fatal("quien atiende ve las notas")
 	}
 }
 
@@ -926,8 +970,8 @@ func TestConfigPauseStates(t *testing.T) {
 	}
 }
 
-// La solución definitiva de un problema resuelve sus incidentes con código "solucionado" (sin cerrarlos
-// ni contar como primera respuesta) y cierra su pausa.
+// La solución definitiva de un problema resuelve sus incidentes con código "solucionado" y la solución como
+// única nota (sin cerrarlos ni contar como primera respuesta), y cierra su pausa.
 func TestProblemResolvesIncidents(t *testing.T) {
 	sv, tn := newAccount(t)
 	pauseIn(t, sv, tn, enCurso)
@@ -942,9 +986,207 @@ func TestProblemResolvesIncidents(t *testing.T) {
 	must(t, sv.Problems.Advance(tid, agent, p.ID, domain.Advance{RootCause: "licencias"}))
 	must(t, sv.Problems.Advance(tid, agent, p.ID, domain.Advance{Solution: " más licencias "}))
 	if a.Status != resuelto || a.ResolvedAt == nil || a.Closed() || a.ResolutionCode != "solucionado" || a.PausedAt != nil ||
-		a.FirstResponseAt != nil || a.ResolutionNote != "Resuelto por el problema P-1: más licencias" ||
-		last(a).Text != "De En curso a Resuelto · Solucionado: Resuelto por el problema P-1: más licencias" ||
+		a.FirstResponseAt != nil || a.ResolutionNote != "más licencias" ||
+		last(a).Text != "De En curso a Resuelto · Solucionado: más licencias" ||
 		a.History[len(a.History)-2].Kind != domain.EvProblem {
 		t.Fatalf("resolución por el problema (un solo evento): %+v", a)
+	}
+}
+
+// No se le saca el permiso resolver a quien tiene incidentes abiertos asignados: primero hay que reasignarlos.
+// Los resueltos no cuentan, y un rol sin usuarios se edita libremente.
+func TestDropResolveNeedsReassign(t *testing.T) {
+	sv, tn := newAccount(t)
+	in := vpn("abierto")
+	in.AssigneeID = agent
+	open, err := sv.Incidents.Create(tid, owner, in)
+	must(t, err)
+	done, err := sv.Incidents.Create(tid, owner, in)
+	must(t, err)
+	must(t, sv.Incidents.Update(tid, agent, done.ID, resolve("solucionado", "ok")))
+
+	err = sv.Accounts.SetUserRole(tid, owner, agent, 3)
+	if err == nil || errors.Is(err, domain.ErrForbidden) || errors.Is(err, domain.ErrNotFound) ||
+		err.Error() != "sin el permiso resolver no se pueden tener incidentes abiertos asignados: reasigná primero los de Agente (#1)" {
+		t.Fatalf("pasar a Solicitante a quien tiene un abierto asignado: %v", err)
+	}
+	if tn.User(agent).RoleID != 2 {
+		t.Fatal("el cambio de rol rechazado no debe aplicarse")
+	}
+	perms := append([]string{}, tn.Role(2).Perms...)
+	if err := sv.Accounts.SaveRole(tid, owner, 2, "Agente", []string{domain.PermPanel, domain.PermCreate}); err == nil || errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("sacarle resolver al rol de quien tiene un abierto asignado: %v", err)
+	}
+	if fmt.Sprint(tn.Role(2).Perms) != fmt.Sprint(perms) {
+		t.Fatalf("la edición rechazada no debe aplicarse: %v", tn.Role(2).Perms)
+	}
+
+	// Lo que no le saca resolver no se bloquea.
+	must(t, sv.Accounts.SaveRole(tid, owner, 2, "Técnico", perms))
+	must(t, sv.Accounts.SaveRole(tid, owner, 0, "Soporte", []string{domain.PermResolve}))
+	soporte := tn.Roles[len(tn.Roles)-1].ID
+	must(t, sv.Accounts.SetUserRole(tid, owner, agent, soporte))
+	// Un rol sin usuarios pierde resolver sin problema.
+	must(t, sv.Accounts.SaveRole(tid, owner, 2, "Técnico", []string{domain.PermCreate}))
+
+	// Reasignado el abierto, ya se puede (el resuelto asignado no cuenta).
+	none := 0
+	must(t, sv.Incidents.Update(tid, owner, open.ID, domain.IncidentPatch{AssigneeID: &none}))
+	must(t, sv.Accounts.SetUserRole(tid, owner, agent, 3))
+	if done.AssigneeID != agent || tn.User(agent).RoleID != 3 {
+		t.Fatalf("asignado del resuelto=%d rol=%d", done.AssigneeID, tn.User(agent).RoleID)
+	}
+}
+
+// El error de SaveRole nombra a todos los usuarios del rol que tienen incidentes abiertos asignados.
+func TestDropResolveNamesEveryone(t *testing.T) {
+	sv, _ := newAccount(t)
+	must(t, sv.Accounts.AddUser(tid, owner, "Agente 2", "agente2@demo.test", pass, 2))
+	for _, who := range []int{agent, 4, agent} {
+		in := vpn("x")
+		in.AssigneeID = who
+		_, err := sv.Incidents.Create(tid, owner, in)
+		must(t, err)
+	}
+	err := sv.Accounts.SaveRole(tid, owner, 2, "Agente", []string{domain.PermPanel})
+	if err == nil || err.Error() != "sin el permiso resolver no se pueden tener incidentes abiertos asignados: reasigná primero los de Agente (#1, #3) y Agente 2 (#2)" {
+		t.Fatalf("%v", err)
+	}
+}
+
+// El responsable de un problema tiene que poder gestionar problemas.
+func TestProblemOwnerNeedsPermission(t *testing.T) {
+	sv, _ := newAccount(t)
+	p, err := sv.Problems.Create(tid, agent, domain.NewProblem{Title: "p", Service: "VPN"})
+	must(t, err)
+	events := len(p.History)
+	err = sv.Problems.SetOwner(tid, agent, p.ID, guest)
+	if err == nil || errors.Is(err, domain.ErrNotFound) || errors.Is(err, domain.ErrForbidden) || p.OwnerID != agent || len(p.History) != events {
+		t.Fatalf("el solicitante no puede ser responsable: err=%v responsable=%d eventos=%d", err, p.OwnerID, len(p.History))
+	}
+	if err := sv.Problems.SetOwner(tid, agent, p.ID, 99); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("un usuario inexistente sigue siendo 404: %v", err)
+	}
+	if err := sv.Problems.SetOwner(tid, agent, p.ID, owner); err != nil || p.OwnerID != owner {
+		t.Fatalf("el titular sí puede: %v", err)
+	}
+}
+
+// Reabrir un incidente cuyo asignado perdió resolver mientras estaba resuelto lo deja sin asignar, con el motivo,
+// después del evento de reapertura. Si el asignado sigue pudiendo atenderlo, lo conserva.
+func TestReopenUnassignsWithoutResolve(t *testing.T) {
+	sv, _ := newAccount(t)
+	in := vpn("x")
+	in.AssigneeID = agent
+	inc, err := sv.Incidents.Create(tid, owner, in)
+	must(t, err)
+	in.AssigneeID = owner
+	kept, err := sv.Incidents.Create(tid, owner, in)
+	must(t, err)
+	for _, i := range []*domain.Incident{inc, kept} {
+		must(t, sv.Incidents.Update(tid, owner, i.ID, resolve("solucionado", "ok")))
+	}
+	must(t, sv.Accounts.SetUserRole(tid, owner, agent, 3)) // el resuelto no bloquea el cambio
+	if inc.AssigneeID != agent {
+		t.Fatal("el cambio de rol no toca el asignado")
+	}
+
+	before := len(inc.History)
+	must(t, sv.Incidents.Reopen(tid, owner, inc.ID, "volvió a pasar"))
+	h := inc.History
+	if inc.AssigneeID != 0 || len(h) != before+2 ||
+		h[len(h)-2].Kind != domain.EvReopened || last(inc).Kind != domain.EvAssigned ||
+		last(inc).Text != "Sin asignar (Agente ya no atiende incidentes)" || last(inc).UserID != owner || !last(inc).At.Equal(h[len(h)-2].At) {
+		t.Fatalf("al reabrir vuelve sin asignar: asignado=%d %+v", inc.AssigneeID, h[before:])
+	}
+	before = len(kept.History)
+	must(t, sv.Incidents.Reopen(tid, owner, kept.ID, "volvió a pasar"))
+	if kept.AssigneeID != owner || len(kept.History) != before+1 {
+		t.Fatalf("quien sigue con resolver conserva el incidente: asignado=%d", kept.AssigneeID)
+	}
+}
+
+// No se le saca el permiso problemas a quien es responsable de un problema activo: primero hay que pasarlo a
+// otro responsable. Los resueltos no cuentan. Si pierde resolver y problemas a la vez, el error lista las dos cosas.
+func TestDropProblemsNeedsHandover(t *testing.T) {
+	sv, tn := newAccount(t)
+	for _, title := range []string{"a", "b", "c"} {
+		_, err := sv.Problems.Create(tid, agent, domain.NewProblem{Title: title, Service: "VPN"})
+		must(t, err)
+	}
+	must(t, sv.Problems.Advance(tid, agent, 2, domain.Advance{}))
+	must(t, sv.Problems.Advance(tid, agent, 2, domain.Advance{RootCause: "x"}))
+	must(t, sv.Problems.Advance(tid, agent, 2, domain.Advance{Solution: "y"})) // P-2 resuelto
+	must(t, sv.Accounts.SaveRole(tid, owner, 0, "Atención", []string{domain.PermResolve}))
+	atencion := tn.Roles[len(tn.Roles)-1].ID
+	only := "sin el permiso problemas no se puede ser responsable de un problema activo: pasá primero P-1 y P-3 de Agente a otro responsable"
+
+	if err := sv.Accounts.SetUserRole(tid, owner, agent, atencion); err == nil || err.Error() != only || tn.User(agent).RoleID != 2 {
+		t.Fatalf("pasar a un rol sin problemas al responsable de problemas activos: %v", err)
+	}
+	perms := fmt.Sprint(tn.Role(2).Perms)
+	if err := sv.Accounts.SaveRole(tid, owner, 2, "Agente", []string{domain.PermResolve}); err == nil || err.Error() != only || fmt.Sprint(tn.Role(2).Perms) != perms {
+		t.Fatalf("sacarle problemas al rol del responsable de problemas activos: %v", err)
+	}
+
+	in := vpn("x")
+	in.AssigneeID = agent
+	_, err := sv.Incidents.Create(tid, owner, in)
+	must(t, err)
+	both := "sin el permiso resolver no se pueden tener incidentes abiertos asignados: reasigná primero los de Agente (#1); " + only
+	if err := sv.Accounts.SetUserRole(tid, owner, agent, 3); err == nil || err.Error() != both {
+		t.Fatalf("si pierde los dos, el error lista los dos: %v", err)
+	}
+	if err := sv.Accounts.SaveRole(tid, owner, 2, "Agente", []string{domain.PermPanel}); err == nil || err.Error() != both {
+		t.Fatalf("si el rol pierde los dos, el error lista los dos: %v", err)
+	}
+
+	must(t, sv.Problems.SetOwner(tid, owner, 1, owner))
+	must(t, sv.Problems.SetOwner(tid, owner, 3, owner))
+	must(t, sv.Accounts.SetUserRole(tid, owner, agent, atencion)) // sin problemas activos: pasa (P-2 está resuelto)
+}
+
+// Con datos viejos (alguien sin el permiso que ya tiene asignado algo), cambiar de rol solo se bloquea si
+// el cambio le saca el permiso.
+func TestRoleChangeBlocksOnlyWhatItTakes(t *testing.T) {
+	sv, tn := newAccount(t)
+	inc, err := sv.Incidents.Create(tid, owner, vpn("x"))
+	must(t, err)
+	p, err := sv.Problems.Create(tid, agent, domain.NewProblem{Title: "p", Service: "VPN"})
+	must(t, err)
+	inc.AssigneeID, p.OwnerID = guest, guest // como quedaron antes de estas reglas
+	must(t, sv.Accounts.SaveRole(tid, owner, 0, "Lectura", []string{domain.PermPanel}))
+	must(t, sv.Accounts.SetUserRole(tid, owner, guest, tn.Roles[len(tn.Roles)-1].ID))
+}
+
+// Al eliminar a un usuario sus resueltos siguen asignados a él (DeleteUser solo desasigna los abiertos).
+// Reabrir uno lo deja sin asignar, después del evento de reapertura.
+func TestReopenUnassignsDeletedUser(t *testing.T) {
+	sv, _ := newAccount(t)
+	in := vpn("x")
+	in.AssigneeID = agent
+	inc, err := sv.Incidents.Create(tid, owner, in)
+	must(t, err)
+	must(t, sv.Incidents.Update(tid, owner, inc.ID, resolve("solucionado", "ok")))
+	must(t, sv.Accounts.DeleteUser(tid, owner, agent))
+	if inc.AssigneeID != agent {
+		t.Fatalf("eliminar al usuario no toca sus resueltos: asignado=%d", inc.AssigneeID)
+	}
+
+	before := len(inc.History)
+	must(t, sv.Incidents.Reopen(tid, owner, inc.ID, "volvió a pasar"))
+	h := inc.History
+	if inc.AssigneeID != 0 || len(h) != before+2 ||
+		h[len(h)-2].Kind != domain.EvReopened || last(inc).Kind != domain.EvAssigned ||
+		last(inc).Text != "Sin asignar (el usuario asignado ya no existe)" || last(inc).UserID != owner || !last(inc).At.Equal(h[len(h)-2].At) {
+		t.Fatalf("al reabrir vuelve sin asignar: asignado=%d %+v", inc.AssigneeID, h[before:])
+	}
+
+	// Sin asignado, reabrir no agrega el evento.
+	must(t, sv.Incidents.Update(tid, owner, inc.ID, resolve("solucionado", "ok")))
+	before = len(inc.History)
+	must(t, sv.Incidents.Reopen(tid, owner, inc.ID, "otra vez"))
+	if len(inc.History) != before+1 || last(inc).Kind != domain.EvReopened {
+		t.Fatalf("sin asignado solo queda la reapertura: %+v", inc.History[before:])
 	}
 }
