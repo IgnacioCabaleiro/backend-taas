@@ -38,8 +38,9 @@ Los datos se guardan en `data.json` (se crea solo; incluye hashes de contraseña
 Las sesiones viven en memoria: al reiniciar el servidor hay que volver a entrar.
 
 Un `data.json` de una versión anterior se carga igual: a los incidentes sin historial se les pone `history: []`
-(no se inventa), las cuentas sin `responseHours` reciben las de la plantilla "otro", sin `pauseStates` quedan con `[]`
-y sin `autoCloseDays` (o con 0, que no es válido) arrancan con 2. Los incidentes ya resueltos sin código quedan con
+(no se inventa), las cuentas sin `responseHours` reciben una copia de sus propias `slaHours` (como en las plantillas:
+así la primera respuesta no supera a la resolución), sin `pauseStates` quedan con `[]` y sin `autoCloseDays` (o con 0,
+que no es válido) arrancan con 2. Los incidentes ya resueltos sin código quedan con
 `resolutionCode: ""`. Al cargar se hace el barrido de cierre automático y, si cerró algo, se guarda.
 
 ## Ciclo de vida del incidente
@@ -58,7 +59,9 @@ reabre y cierra; quien solo reporta publica respuestas en sus incidentes.
 - Códigos de resolución (en el historial, su etiqueta): `solucionado` (Solucionado), `workaround` (Con workaround), `duplicado` (Duplicado), `sin_reproducir` (No se pudo reproducir), `cancelado` (Cancelado). `resolutionCode` guarda el código. `duplicado` y `cancelado` resuelven y cierran en el mismo momento; el resto queda resuelto. Un resuelto no cambia de estado: hay que reabrirlo.
 - **Reapertura** (solo un resuelto): vuelve al estado inicial, borra la resolución, suma `reopenCount` y libera `autoCloseHold`. Si su asignado ya no tiene `resolver` o ya no existe, queda sin asignar (evento `asignado` después del `reabierto`). El `dueAt` original se mantiene (cuenta contra el SLA).
 - **Cierre automático**: un resuelto se cierra solo tras `config.autoCloseDays` días sin actividad (2 por defecto, mínimo 1). Actividad es cualquier evento del historial, incluida la resolución, así que cada evento nuevo reinicia la cuenta: `closedAt` = último evento + esos días, con el evento `cerrado` sin usuario (`userId: 0`, `Cerrado automáticamente tras N días sin actividad`). Si quien lo reportó responde estando resuelto, queda `autoCloseHold: true` y ya no se cierra solo hasta que quien gestiona lo cierre o lo reabra. El barrido es perezoso: al cargar el archivo y al principio de cada pedido autenticado.
-- **Primera respuesta** (`firstResponseAt`): la primera respuesta pública de alguien con `resolver`. Cambiar el estado, asignar o resolver un problema no cuentan. Con el módulo SLA, el registro calcula `responseDueAt` con `config.responseHours`.
+- **Primera respuesta** (`firstResponseAt`): la primera respuesta pública de alguien con `resolver`. Cambiar el estado, asignar o resolver un problema no cuentan. Con el módulo SLA, el registro calcula `responseDueAt` con `config.responseHours`. Primero se responde y después se
+  resuelve: en cada prioridad, `responseHours` no puede superar a `slaHours` (igual sí). Se valida siempre, en el
+  onboarding y en `PUT /api/config`, aunque el módulo SLA esté apagado.
 - **Pausa del SLA**: en los estados de `config.pauseStates` el reloj de resolución se detiene (`pausedAt`). Al salir, `dueAt` se corre lo que duró la pausa: el vencimiento guardado ya la descuenta. La pausa nunca mueve `responseDueAt`, que se fija al registrar el incidente.
 - Resolver un problema resuelve (sin cerrar) sus incidentes abiertos con código `solucionado` y solo la solución como nota (sin nombrar al problema: quien solo reporta ve la resolución); los cerrados no cambian. Un cerrado solo se vincula a un problema al crear el problema (`incidentIds`, por ejemplo desde una sugerencia): cambia su `problemId` y queda el evento en su historial.
 
@@ -103,9 +106,9 @@ Salvo alta, login y plantillas, todo requiere `Authorization: Bearer <token>` y 
 | `POST /api/login` · `POST /api/logout` | abre y cierra sesión | — |
 | `GET /api/templates` | plantillas de rubro para el onboarding | — |
 | `GET /api/state` | estado de la cuenta | sesión |
-| `POST /api/onboarding` | aplica las respuestas del onboarding: rubro, servicios y cómo trabaja el cliente (equipo, plazos, recurrencia, datos propios). Repetible hasta terminar | `config` |
+| `POST /api/onboarding` | aplica las respuestas del onboarding: rubro, servicios y cómo trabaja el cliente (equipo, plazos, recurrencia, datos propios, si espera a quien reportó). Opcionales: `responseHours` y `waitsRequester` (los dos solo con `sla`) y `autoCloseDays` (ver abajo). Repetible hasta terminar: cada vez se arma de nuevo desde la plantilla | `config` |
 | `POST /api/onboarding/finish` | da por terminado el onboarding | `config` |
-| `PUT /api/config` | módulos, servicios, estados, campos, SLA (resolución y primera respuesta), estados de pausa, días para el cierre automático y regla de recurrencia | `config` |
+| `PUT /api/config` | módulos, servicios, estados, campos, SLA (resolución y primera respuesta, que no puede superarla), estados de pausa, días para el cierre automático y regla de recurrencia | `config` |
 | `POST /api/users` · `PUT/DELETE /api/users/{id}` | hasta 5 usuarios además del titular. Un cambio de rol que le saca `resolver` a quien tiene incidentes abiertos asignados, o `problemas` a quien es responsable de un problema activo (no resuelto), se rechaza: hay que reasignarlos primero | `config` |
 | `POST /api/roles` · `PUT/DELETE /api/roles/{id}` | roles con permisos a medida. Un rol no pierde `resolver` mientras alguno de sus usuarios tenga incidentes abiertos asignados, ni `problemas` mientras alguno sea responsable de un problema activo | `config` |
 | `POST /api/incidents` | registra un incidente. `assigneeId` tiene que ser alguien con `resolver` (0 = sin asignar). `relatedIncidentId` lo relaciona con uno cerrado (quien solo reporta, con uno suyo) | `crear` |
@@ -114,6 +117,21 @@ Salvo alta, login y plantillas, todo requiere `Authorization: Bearer <token>` y 
 | `POST /api/incidents/{id}/reopen` | `{reason}`: reabre un incidente resuelto (no uno cerrado) | `resolver` |
 | `POST /api/incidents/{id}/close` | `{}`: cierra un incidente resuelto | `resolver` |
 | `POST /api/problems` · `/{id}/advance` · `/{id}/owner` · `/{id}/comments` | gestión de problemas. Crear un problema con `incidentIds` vincula esos incidentes, también los cerrados. El responsable (`ownerId`) tiene que tener `problemas` | `problemas` |
+
+El onboarding arma la configuración desde la plantilla del rubro (`GET /api/templates`, que el front usa para precargar) y
+las respuestas. Las del ciclo de vida del incidente:
+
+- `responseHours` (`{"alta": n, "media": n, "baja": n}`): horas de primera respuesta. Solo con `sla: true`; sin SLA se
+  ignora y quedan las de la plantilla.
+- `waitsRequester` (`true`/`false`): solo con `sla: true` (sin SLA se ignora: no hay reloj que pausar). Agrega el estado
+  "Esperando al solicitante" justo antes del de resolución, también sin equipo (queda inicial, esperando, resolución), y
+  lo deja como único estado de pausa; si la plantilla ya trae ese estado, no se duplica: se reusa donde está. Con
+  `false` no hay pausa.
+- `autoCloseDays`: días sin actividad para el cierre automático.
+
+`responseHours` y `autoCloseDays` que no vienen toman el valor de la plantilla; si vienen en `null` o en 0 (o falta una
+prioridad, o una primera respuesta que supera a la resolución de la plantilla) es un 400 con el mismo error que en
+`PUT /api/config`, sin cambiar la cuenta.
 
 Permisos: `panel`, `crear`, `resolver`, `problemas`, `config`. Un 403 es "no es tuyo" o "tu rol no puede"; pedir algo
 que la etapa del incidente no permite (por ejemplo, reabrir uno cerrado) es un 400.

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -240,5 +241,73 @@ func TestRoleAndOwnerChecks(t *testing.T) {
 	}
 	if v, _ := svc.State.View(1, 1); v.Incidents[1].AssigneeID != 0 {
 		t.Fatalf("al reabrirlo, el #2 vuelve sin asignar: %d", v.Incidents[1].AssigneeID)
+	}
+}
+
+// En el JSON del onboarding, un campo opcional que no vino toma lo de la plantilla; uno que vino en null o en 0
+// es un error de validación (400), con el mensaje de Config.Validate.
+func TestOnboardingOptionalFields(t *testing.T) {
+	tenants, _ := repository.NewJSONTenants("")
+	h := New(service.New(tenants, repository.NewMemorySessions()))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/signup",
+		strings.NewReader(`{"company": "Chica", "name": "Titular", "email": "chica@demo.test", "password": "clave-de-prueba"}`)))
+	var signup struct{ Token string }
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &signup) != nil {
+		t.Fatalf("signup: %d %s", rec.Code, rec.Body)
+	}
+
+	for _, c := range []struct {
+		body string
+		want int
+		cfg  string // estados, pausa, primera respuesta y cierre automático que quedan
+	}{
+		{`{"template": "it", "team": true, "sla": true}`, 200, "[Nuevo En curso Resuelto] [] map[alta:4 baja:24 media:8] 2"},
+		{`{"template": "it", "sla": true, "waitsRequester": true, "autoCloseDays": 3, "responseHours": {"alta": 1, "media": 2, "baja": 3}}`, 200,
+			"[Nuevo Esperando al solicitante Resuelto] [Esperando al solicitante] map[alta:1 baja:3 media:2] 3"},
+		{`{"template": "it", "responseHours": {"alta": 1, "media": 2, "baja": 3}, "waitsRequester": true}`, 200,
+			"[Nuevo Resuelto] [] map[alta:4 baja:24 media:8] 2"}, // sin SLA, las dos se ignoran
+		{`{"template": "it", "sla": true, "responseHours": {"alta": 4, "media": 8, "baja": 24}}`, 200, // igual a la resolución
+			"[Nuevo Resuelto] [] map[alta:4 baja:24 media:8] 2"},
+		{`{"template": "it", "sla": true, "responseHours": {"alta": 5, "media": 8, "baja": 24}}`, 400, ""}, // supera a la resolución
+		{`{"template": "it", "sla": true, "responseHours": null}`, 400, ""},
+		{`{"template": "it", "sla": true, "responseHours": {"alta": null, "media": 2, "baja": 3}}`, 400, ""},
+		{`{"template": "it", "sla": true, "responseHours": {"alta": 1, "media": 0, "baja": 3}}`, 400, ""},
+		{`{"template": "it", "autoCloseDays": null}`, 400, ""},
+		{`{"template": "it", "autoCloseDays": 0}`, 400, ""},
+		{`{"template": "it", "autoCloseDays": "3"}`, 400, ""},
+	} {
+		got, v := call(t, h, signup.Token, "/api/onboarding", c.body)
+		cfg := v.Config
+		if got != c.want || (got == 200 && fmt.Sprint(cfg.States, cfg.PauseStates, cfg.ResponseHours, cfg.AutoCloseDays) != c.cfg) {
+			t.Errorf("%s: esperaba %d %s, obtuve %d %+v", c.body, c.want, c.cfg, got, cfg)
+		}
+	}
+}
+
+// PUT /api/config: una primera respuesta que supera a la resolución de su prioridad es un 400; igual pasa.
+func TestConfigResponseNotAfterResolution(t *testing.T) {
+	h, _, tok := newServer(t)
+	for _, c := range []struct {
+		response, resolution int
+		want                 int
+		msg                  string
+	}{
+		{5, 4, 400, "la primera respuesta de prioridad alta (5 h) no puede superar a la resolución (4 h)"},
+		{4, 4, 200, ""},
+		{2, 3, 200, ""},
+	} {
+		_, cfg, _ := service.BuildConfig("it", service.Full)
+		cfg.ResponseHours["alta"], cfg.SLAHours["alta"] = c.response, c.resolution
+		body, _ := json.Marshal(cfg)
+		r := httptest.NewRequest("PUT", "/api/config", strings.NewReader(string(body)))
+		r.Header.Set("Authorization", "Bearer "+tok[1])
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		var res struct{ Error string }
+		json.Unmarshal(rec.Body.Bytes(), &res)
+		if rec.Code != c.want || res.Error != c.msg {
+			t.Errorf("respuesta %d h, resolución %d h: esperaba %d %q, obtuve %d %q", c.response, c.resolution, c.want, c.msg, rec.Code, res.Error)
+		}
 	}
 }
