@@ -200,8 +200,8 @@ func Tenants() []*domain.Tenant {
 		// La demo pausa el SLA mientras espera al solicitante (las plantillas no traen estados de pausa).
 		// Se agrega después de armar los incidentes para no cambiar los de siempre.
 		st := t.Config.States
-		t.Config.States = append(append(append([]string{}, st[:len(st)-1]...), waiting), final)
-		t.Config.PauseStates = []string{waiting}
+		t.Config.States = append(append(append([]string{}, st[:len(st)-1]...), service.WaitingRequester), final)
+		t.Config.PauseStates = []string{service.WaitingRequester}
 		lifecycle(t, life, now, byProblem, i == 0)
 		out = append(out, t)
 	}
@@ -233,9 +233,6 @@ var (
 	}
 )
 
-// waiting: el estado de pausa de las cuentas de demo, justo antes del de resolución.
-const waiting = "Esperando al solicitante"
-
 // lifecycle arma el historial de cada incidente de demo hasta la etapa que ya tiene (registro, diagnóstico,
 // respuestas, notas, resolución y cierre), con los mismos efectos que la API: primera respuesta, pausas del SLA
 // (corren el vencimiento de resolución) y cierre automático tras AutoCloseDays sin actividad. byProblem: incidentes que resolvió su problema, con el estado en el
@@ -249,7 +246,7 @@ func lifecycle(t *domain.Tenant, rnd *rand.Rand, now time.Time, byProblem map[in
 	paused, discarded := 0, 0 // discarded: resueltos como duplicado o cancelado, que cierran al resolver (uno o dos)
 	for _, inc := range t.Incidents {
 		if paused < 2 && inc.ResolvedAt == nil && inc.ProblemID == 0 {
-			inc.Status = waiting
+			inc.Status = service.WaitingRequester
 			paused++
 		}
 	}
@@ -258,12 +255,12 @@ func lifecycle(t *domain.Tenant, rnd *rand.Rand, now time.Time, byProblem map[in
 	var onTime *domain.Incident
 	for _, inc := range t.Incidents {
 		mid := inc.CreatedAt.Add(now.Sub(inc.CreatedAt) / 2)
-		if onTime == nil && inc.ResolvedAt == nil && inc.ProblemID == 0 && inc.Status != waiting && inc.DueAt.After(mid) {
+		if onTime == nil && inc.ResolvedAt == nil && inc.ProblemID == 0 && inc.Status != service.WaitingRequester && inc.DueAt.After(mid) {
 			onTime = inc
 		}
 	}
 	if onTime != nil {
-		onTime.Status = waiting
+		onTime.Status = service.WaitingRequester
 	}
 	var reopened, held *domain.Incident
 	for _, inc := range t.Incidents {
@@ -342,7 +339,7 @@ func lifecycle(t *domain.Tenant, rnd *rand.Rand, now time.Time, byProblem map[in
 		}
 		// La primera respuesta es la primera respuesta pública de quien atiende (cambiar el estado no cuenta).
 		// onTime hace el sorteo como si no estuviera en pausa, para no cambiar el resto de la demo.
-		if (target == waiting && inc != onTime) || rnd.Float64() < 0.8 || inc == onTime {
+		if (target == service.WaitingRequester && inc != onTime) || rnd.Float64() < 0.8 || inc == onTime {
 			text := replies[rnd.Intn(len(replies))]
 			add(f(0.1+0.5*rnd.Float64()), func(at time.Time) { s.reply(at, agent, text) })
 		}

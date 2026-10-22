@@ -87,8 +87,9 @@ func (t *Tenant) Clone() *Tenant {
 func (t *Tenant) Normalize() {
 	c := &t.Config
 	if c.ResponseHours == nil {
+		// Las de resolución de la propia cuenta, como en las plantillas: así no pueden superarlas (ver Config.Validate).
 		c.ResponseHours = map[string]int{}
-		for k, v := range DefaultResponseHours {
+		for k, v := range c.SLAHours {
 			c.ResponseHours[k] = v
 		}
 	}

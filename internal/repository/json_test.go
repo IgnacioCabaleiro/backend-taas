@@ -16,12 +16,12 @@ import (
 // Un data.json de antes del ciclo de vida del incidente: sin historial, primera respuesta, pausas ni cierre.
 const legacy = `[{"id": 1, "name": "Vieja", "industry": "Soporte IT", "onboarded": true, "ownerId": 1,
  "config": {"modules": {"sla": true, "problems": true}, "services": ["VPN"], "states": ["Nuevo", "En curso", "Resuelto"],
-  "slaHours": {"alta": 4, "media": 8, "baja": 24}, "fields": [], "recurrenceMin": 2, "recurrenceDays": 7},
+  "slaHours": {"alta": 1, "media": 4, "baja": 12}, "fields": [], "recurrenceMin": 2, "recurrenceDays": 7},
  "roles": [{"id": 1, "name": "Administrador", "perms": ["panel", "crear", "resolver", "problemas", "config"], "locked": true}],
  "users": [{"id": 1, "name": "Titular", "email": "t@vieja.test", "roleId": 1}], "nextUserId": 2, "nextRoleId": 2,
  "incidents": [{"id": 1, "title": "x", "description": "", "service": "VPN", "priority": "alta", "status": "Resuelto",
   "fields": {}, "createdBy": 1, "assigneeId": 0, "problemId": 0, "createdAt": "2026-01-01T10:00:00Z",
-  "dueAt": "2026-01-01T14:00:00Z", "resolvedAt": "2026-01-01T12:00:00Z"}],
+  "dueAt": "2026-01-01T11:00:00Z", "resolvedAt": "2026-01-01T12:00:00Z"}],
  "problems": []}]`
 
 func TestLoadLegacyData(t *testing.T) {
@@ -35,10 +35,15 @@ func TestLoadLegacyData(t *testing.T) {
 	}
 	tn, _ := tenants.Get(1)
 	c := tn.Config
-	if c.AutoCloseDays != 2 || fmt.Sprint(c.ResponseHours) != fmt.Sprint(domain.DefaultResponseHours) ||
+	// Sin primera respuesta: copia la resolución de la propia cuenta (1/4/12), no los valores de una plantilla.
+	if c.AutoCloseDays != 2 || fmt.Sprint(c.ResponseHours) != "map[alta:1 baja:12 media:4]" ||
 		c.PauseStates == nil || len(c.PauseStates) != 0 {
 		t.Fatalf("faltan los valores por defecto: %+v", c)
 	}
+	if c.ResponseHours["alta"] = 2; c.SLAHours["alta"] != 1 {
+		t.Fatal("la primera respuesta tiene que ser una copia de la resolución, no el mismo mapa")
+	}
+	c.ResponseHours["alta"] = 1
 	if err := c.Validate(); err != nil {
 		t.Fatalf("la configuración cargada tiene que ser válida: %v", err)
 	}
