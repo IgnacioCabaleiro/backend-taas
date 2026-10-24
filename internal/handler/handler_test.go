@@ -270,6 +270,8 @@ func TestOnboardingOptionalFields(t *testing.T) {
 		{`{"template": "it", "sla": true, "responseHours": {"alta": 4, "media": 8, "baja": 24}}`, 200, // igual a la resolución
 			"[Nuevo Resuelto] [] map[alta:4 baja:24 media:8] 2"},
 		{`{"template": "it", "sla": true, "responseHours": {"alta": 5, "media": 8, "baja": 24}}`, 400, ""}, // supera a la resolución
+		{`{"template": "it", "sla": true, "responseHours": {"alta": 2, "media": 8, "baja": 24, "urgente": -5}}`, 200, // no es una prioridad
+			"[Nuevo Resuelto] [] map[alta:2 baja:24 media:8] 2"},
 		{`{"template": "it", "sla": true, "responseHours": null}`, 400, ""},
 		{`{"template": "it", "sla": true, "responseHours": {"alta": null, "media": 2, "baja": 3}}`, 400, ""},
 		{`{"template": "it", "sla": true, "responseHours": {"alta": 1, "media": 0, "baja": 3}}`, 400, ""},
@@ -281,6 +283,11 @@ func TestOnboardingOptionalFields(t *testing.T) {
 		cfg := v.Config
 		if got != c.want || (got == 200 && fmt.Sprint(cfg.States, cfg.PauseStates, cfg.ResponseHours, cfg.AutoCloseDays) != c.cfg) {
 			t.Errorf("%s: esperaba %d %s, obtuve %d %+v", c.body, c.want, c.cfg, got, cfg)
+		}
+		if got == 200 {
+			if raw := getState(t, h, signup.Token); strings.Contains(raw, "urgente") {
+				t.Errorf("%s: /api/state trae una clave que no es una prioridad: %s", c.body, raw)
+			}
 		}
 	}
 }
@@ -299,6 +306,7 @@ func TestConfigResponseNotAfterResolution(t *testing.T) {
 	} {
 		_, cfg, _ := service.BuildConfig("it", service.Full)
 		cfg.ResponseHours["alta"], cfg.SLAHours["alta"] = c.response, c.resolution
+		cfg.ResponseHours["urgente"], cfg.SLAHours["urgente"] = -5, -5 // no es una prioridad: se descarta
 		body, _ := json.Marshal(cfg)
 		r := httptest.NewRequest("PUT", "/api/config", strings.NewReader(string(body)))
 		r.Header.Set("Authorization", "Bearer "+tok[1])
@@ -309,5 +317,21 @@ func TestConfigResponseNotAfterResolution(t *testing.T) {
 		if rec.Code != c.want || res.Error != c.msg {
 			t.Errorf("respuesta %d h, resolución %d h: esperaba %d %q, obtuve %d %q", c.response, c.resolution, c.want, c.msg, rec.Code, res.Error)
 		}
+		if raw := getState(t, h, tok[1]); strings.Contains(rec.Body.String(), "urgente") || strings.Contains(raw, "urgente") {
+			t.Errorf("respuesta %d h, resolución %d h: quedó guardada una clave que no es una prioridad: %s", c.response, c.resolution, raw)
+		}
 	}
+}
+
+// getState devuelve el cuerpo de GET /api/state.
+func getState(t *testing.T, h http.Handler, token string) string {
+	t.Helper()
+	r := httptest.NewRequest("GET", "/api/state", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/state: %d %s", rec.Code, rec.Body)
+	}
+	return rec.Body.String()
 }

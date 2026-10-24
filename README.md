@@ -39,8 +39,9 @@ Las sesiones viven en memoria: al reiniciar el servidor hay que volver a entrar.
 
 Un `data.json` de una versión anterior se carga igual: a los incidentes sin historial se les pone `history: []`
 (no se inventa), las cuentas sin `responseHours` reciben una copia de sus propias `slaHours` (como en las plantillas:
-así la primera respuesta no supera a la resolución), sin `pauseStates` quedan con `[]` y sin `autoCloseDays` (o con 0,
-que no es válido) arrancan con 2. Los incidentes ya resueltos sin código quedan con
+así la primera respuesta no supera a la resolución), y en las que la traen, cada prioridad que supera a su resolución
+se baja a la resolución (antes se podía guardar así; si no, la cuenta no podría volver a guardar su Configuración).
+Sin `pauseStates` quedan con `[]` y sin `autoCloseDays` (o con 0, que no es válido) arrancan con 2. Los incidentes ya resueltos sin código quedan con
 `resolutionCode: ""`. Al cargar se hace el barrido de cierre automático y, si cerró algo, se guarda.
 
 ## Ciclo de vida del incidente
@@ -61,7 +62,8 @@ reabre y cierra; quien solo reporta publica respuestas en sus incidentes.
 - **Cierre automático**: un resuelto se cierra solo tras `config.autoCloseDays` días sin actividad (2 por defecto, mínimo 1). Actividad es cualquier evento del historial, incluida la resolución, así que cada evento nuevo reinicia la cuenta: `closedAt` = último evento + esos días, con el evento `cerrado` sin usuario (`userId: 0`, `Cerrado automáticamente tras N días sin actividad`). Si quien lo reportó responde estando resuelto, queda `autoCloseHold: true` y ya no se cierra solo hasta que quien gestiona lo cierre o lo reabra. El barrido es perezoso: al cargar el archivo y al principio de cada pedido autenticado.
 - **Primera respuesta** (`firstResponseAt`): la primera respuesta pública de alguien con `resolver`. Cambiar el estado, asignar o resolver un problema no cuentan. Con el módulo SLA, el registro calcula `responseDueAt` con `config.responseHours`. Primero se responde y después se
   resuelve: en cada prioridad, `responseHours` no puede superar a `slaHours` (igual sí). Se valida siempre, en el
-  onboarding y en `PUT /api/config`, aunque el módulo SLA esté apagado.
+  onboarding y en `PUT /api/config`, aunque el módulo SLA esté apagado. En `slaHours` y `responseHours` solo se
+  guardan las prioridades (`alta`, `media`, `baja`): cualquier otra clave se descarta.
 - **Pausa del SLA**: en los estados de `config.pauseStates` el reloj de resolución se detiene (`pausedAt`). Al salir, `dueAt` se corre lo que duró la pausa: el vencimiento guardado ya la descuenta. La pausa nunca mueve `responseDueAt`, que se fija al registrar el incidente.
 - Resolver un problema resuelve (sin cerrar) sus incidentes abiertos con código `solucionado` y solo la solución como nota (sin nombrar al problema: quien solo reporta ve la resolución); los cerrados no cambian. Un cerrado solo se vincula a un problema al crear el problema (`incidentIds`, por ejemplo desde una sugerencia): cambia su `problemId` y queda el evento en su historial.
 
@@ -123,10 +125,11 @@ las respuestas. Las del ciclo de vida del incidente:
 
 - `responseHours` (`{"alta": n, "media": n, "baja": n}`): horas de primera respuesta. Solo con `sla: true`; sin SLA se
   ignora y quedan las de la plantilla.
-- `waitsRequester` (`true`/`false`): solo con `sla: true` (sin SLA se ignora: no hay reloj que pausar). Agrega el estado
-  "Esperando al solicitante" justo antes del de resolución, también sin equipo (queda inicial, esperando, resolución), y
-  lo deja como único estado de pausa; si la plantilla ya trae ese estado, no se duplica: se reusa donde está. Con
-  `false` no hay pausa.
+- `waitsRequester` (`true`/`false`): solo con `sla: true` (sin SLA se ignora: no hay reloj que pausar). Deja el estado
+  "Esperando al solicitante" como único estado de pausa. Con equipo, si la plantilla ya trae ese estado se reusa donde
+  está (no se duplica); si no, se agrega justo antes del de resolución. Sin equipo el flujo se recorta a inicial y
+  resolución (si la plantilla lo traía, se va con el recorte) y el estado se vuelve a insertar antes del de resolución:
+  queda inicial, esperando, resolución. Con `false` no hay pausa.
 - `autoCloseDays`: días sin actividad para el cierre automático.
 
 `responseHours` y `autoCloseDays` que no vienen toman el valor de la plantilla; si vienen en `null` o en 0 (o falta una

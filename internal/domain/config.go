@@ -43,9 +43,6 @@ const DefaultAutoCloseDays = 2
 
 var Priorities = []string{"alta", "media", "baja"}
 
-// DefaultResponseHours: las horas de primera respuesta de la plantilla "otro" (service/templates.go la usa).
-var DefaultResponseHours = map[string]int{"alta": 4, "media": 8, "baja": 24}
-
 // Setup: lo que el titular responde en el onboarding. No elige "módulos": cuenta cómo trabaja
 // y de ahí sale la configuración inicial, que después puede ajustar desde Configuración.
 type Setup struct {
@@ -128,6 +125,18 @@ func clean(list []string, what string) ([]string, error) {
 	return out, nil
 }
 
+// byPriority devuelve un mapa nuevo (nunca nil) solo con las claves que son prioridades: las demás se descartan.
+// No toca el original, que puede estar compartido.
+func byPriority(m map[string]int) map[string]int {
+	out := map[string]int{}
+	for _, p := range Priorities {
+		if v, ok := m[p]; ok {
+			out[p] = v
+		}
+	}
+	return out
+}
+
 // Validate normaliza la configuración y verifica que con ella se pueda operar.
 func (c *Config) Validate() error {
 	var err error
@@ -143,6 +152,7 @@ func (c *Config) Validate() error {
 	if len(c.States) < 2 {
 		return errors.New("hacen falta al menos dos estados: uno inicial y uno de resolución")
 	}
+	c.SLAHours, c.ResponseHours = byPriority(c.SLAHours), byPriority(c.ResponseHours)
 	for _, p := range Priorities {
 		if c.SLAHours[p] < 1 {
 			return fmt.Errorf("el SLA de prioridad %s tiene que ser de al menos 1 hora", p)

@@ -56,7 +56,7 @@ var templates = map[string]Template{
 		Services:      []string{"Atención al cliente", "Sistemas", "Administración"},
 		States:        []string{"Nuevo", "En curso", "Resuelto"},
 		SLAHours:      map[string]int{"alta": 4, "media": 8, "baja": 24},
-		ResponseHours: domain.DefaultResponseHours,
+		ResponseHours: map[string]int{"alta": 4, "media": 8, "baja": 24},
 		PauseStates:   []string{},
 		AutoCloseDays: domain.DefaultAutoCloseDays,
 		Fields: []domain.Field{

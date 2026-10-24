@@ -215,6 +215,9 @@ func TestOnboardingLifecycle(t *testing.T) {
 	if tn.Config.ResponseHours["alta"] == 99 {
 		t.Fatal("la cuenta comparte el mapa de las respuestas")
 	}
+	// Las claves que no son prioridades se descartan.
+	onboard(domain.Setup{Template: "salud", SLA: true, ResponseHours: hours(map[string]int{"alta": 1, "media": 3, "baja": 10, "urgente": -5})},
+		"[Reportado Resuelto] [] map[alta:1 baja:10 media:3] 2")
 
 	// Esperar al solicitante: un estado más justo antes del de resolución, que es el único que pausa. También sin equipo.
 	// Sin SLA no hay reloj que pausar: se ignora.
@@ -291,6 +294,8 @@ func TestOnboardingReusesWaitingState(t *testing.T) {
 		{domain.Setup{Team: true, SLA: true, WaitsRequester: true}, "[Nuevo Esperando al solicitante En curso Resuelto] [Esperando al solicitante]"},
 		{domain.Setup{Team: true, SLA: true}, "[Nuevo Esperando al solicitante En curso Resuelto] []"},
 		{domain.Setup{Team: true, WaitsRequester: true}, "[Nuevo Esperando al solicitante En curso Resuelto] []"}, // sin SLA se ignora
+		// Sin equipo el recorte se lo lleva y se vuelve a insertar antes del de resolución.
+		{domain.Setup{SLA: true, WaitsRequester: true}, "[Nuevo Esperando al solicitante Resuelto] [Esperando al solicitante]"},
 	} {
 		got, err := tpl.Build(c.in)
 		if err != nil || fmt.Sprint(got.States, got.PauseStates) != c.want {
@@ -328,9 +333,13 @@ func TestResponseNotAfterResolution(t *testing.T) {
 	}
 	_, c, _ := service.BuildConfig("it", service.Full)
 	c.ResponseHours["media"], c.SLAHours["baja"], c.ResponseHours["baja"] = 8, 12, 12 // igual está permitido
+	c.SLAHours["urgente"], c.ResponseHours["urgente"] = -5, -5                        // no es una prioridad: se descarta
 	must(t, sv.Setup.SetConfig(tid, owner, c))
 	if fmt.Sprint(tn.Config.ResponseHours, tn.Config.SLAHours) != "map[alta:4 baja:12 media:8] map[alta:4 baja:12 media:8]" {
-		t.Fatalf("no se guardó: %v %v", tn.Config.ResponseHours, tn.Config.SLAHours)
+		t.Fatalf("no se guardó o quedaron claves que no son prioridades: %v %v", tn.Config.ResponseHours, tn.Config.SLAHours)
+	}
+	if c.SLAHours["urgente"] != -5 || c.ResponseHours["urgente"] != -5 {
+		t.Fatal("descartar las claves no puede escribir sobre los mapas del pedido")
 	}
 }
 

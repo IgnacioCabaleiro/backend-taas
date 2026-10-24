@@ -197,11 +197,9 @@ func Tenants() []*domain.Tenant {
 			}
 			t.Problems = append(t.Problems, p)
 		}
-		// La demo pausa el SLA mientras espera al solicitante (las plantillas no traen estados de pausa).
+		// La demo pausa el SLA mientras espera al solicitante, como el onboarding con "waitsRequester".
 		// Se agrega después de armar los incidentes para no cambiar los de siempre.
-		st := t.Config.States
-		t.Config.States = append(append(append([]string{}, st[:len(st)-1]...), service.WaitingRequester), final)
-		t.Config.PauseStates = []string{service.WaitingRequester}
+		service.AddWaitingRequester(&t.Config)
 		lifecycle(t, life, now, byProblem, i == 0)
 		out = append(out, t)
 	}

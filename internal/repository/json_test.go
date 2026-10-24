@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -40,10 +41,9 @@ func TestLoadLegacyData(t *testing.T) {
 		c.PauseStates == nil || len(c.PauseStates) != 0 {
 		t.Fatalf("faltan los valores por defecto: %+v", c)
 	}
-	if c.ResponseHours["alta"] = 2; c.SLAHours["alta"] != 1 {
+	if reflect.ValueOf(c.ResponseHours).UnsafePointer() == reflect.ValueOf(c.SLAHours).UnsafePointer() {
 		t.Fatal("la primera respuesta tiene que ser una copia de la resolución, no el mismo mapa")
 	}
-	c.ResponseHours["alta"] = 1
 	if err := c.Validate(); err != nil {
 		t.Fatalf("la configuración cargada tiene que ser válida: %v", err)
 	}
@@ -76,5 +76,31 @@ func TestLoadZeroAutoCloseDays(t *testing.T) {
 	}
 	if tn, _ := tenants.Get(1); tn.Config.AutoCloseDays != 2 {
 		t.Fatalf("autoCloseDays=%d", tn.Config.AutoCloseDays)
+	}
+}
+
+// Una cuenta guardada con primeras respuestas mayores que su resolución (antes se podía) se ajusta al cargar:
+// cada prioridad baja a su resolución y la configuración vuelve a ser válida.
+func TestLoadClampsResponseHours(t *testing.T) {
+	sla := `"slaHours": {"alta": 1, "media": 4, "baja": 12}`
+	data := strings.Replace(legacy, sla, sla+`, "responseHours": {"alta": 4, "media": 8, "baja": 24}`, 1)
+	if data == legacy {
+		t.Fatal("el fixture cambió: no se pudo agregar responseHours")
+	}
+	path := filepath.Join(t.TempDir(), "data.json")
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tenants, err := repository.NewJSONTenants(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tn, _ := tenants.Get(1)
+	c := tn.Config
+	if fmt.Sprint(c.ResponseHours) != "map[alta:1 baja:12 media:4]" {
+		t.Fatalf("la primera respuesta tiene que bajar a la resolución: %v", c.ResponseHours)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("la configuración cargada tiene que ser válida: %v", err)
 	}
 }
