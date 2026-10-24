@@ -118,7 +118,7 @@ func TestConfig(t *testing.T) {
 	}
 	_, c, _ = service.BuildConfig("it", service.Full)
 	c.States = []string{"Nuevo", "Cerrado"}
-	c.SLAHours["alta"] = 2
+	c.SLAHours["alta"], c.ResponseHours["alta"] = 2, 2 // la primera respuesta no puede superar a la resolución
 	must(t, sv.Setup.SetConfig(tid, owner, c))
 	if inc.Status != "Nuevo" {
 		t.Fatalf("un estado eliminado debe volver al inicial, quedó %q", inc.Status)
@@ -174,6 +174,172 @@ func TestOnboarding(t *testing.T) {
 	}
 	if sv.Setup.Finish(tid, owner) != nil || !tn.Onboarded || sv.Setup.Onboard(tid, owner, domain.Setup{Template: "it"}) == nil {
 		t.Fatal("al terminar queda onboardeada y ya no se puede repetir")
+	}
+}
+
+// El onboarding también arma el ciclo de vida del incidente: primera respuesta, espera al solicitante y cierre automático.
+func TestOnboardingLifecycle(t *testing.T) {
+	tenants, _ := repository.NewJSONTenants("")
+	sv := service.New(tenants, repository.NewMemorySessions())
+	sv.Auth.Signup("Chica", "Titular", "chica@demo.test", pass)
+	tn, _ := tenants.Get(tid)
+	hours := func(h map[string]int) domain.Opt[map[string]int] {
+		return domain.Opt[map[string]int]{Set: true, Value: h}
+	}
+	days := func(n int) domain.Opt[int] { return domain.Opt[int]{Set: true, Value: n} }
+	onboard := func(in domain.Setup, want string) {
+		t.Helper()
+		must(t, sv.Setup.Onboard(tid, owner, in))
+		c := tn.Config
+		if got := fmt.Sprint(c.States, c.PauseStates, c.ResponseHours, c.AutoCloseDays); got != want {
+			t.Fatalf("%+v:\n obtuve %s\nesperaba %s", in, got, want)
+		}
+	}
+
+	// Sin las respuestas nuevas queda lo de la plantilla, como antes.
+	onboard(domain.Setup{Template: "salud", Team: true, SLA: true},
+		"[Reportado En revisión Derivado a proveedor Resuelto] [] map[alta:1 baja:12 media:4] 2")
+	onboard(domain.Setup{Template: "salud"}, "[Reportado Resuelto] [] map[alta:1 baja:12 media:4] 2")
+
+	// Las horas de primera respuesta se usan solo con SLA; sin SLA quedan las de la plantilla.
+	// Salud resuelve en 1/4/12: alta igual a la resolución (permitido), media y baja menos.
+	custom := map[string]int{"alta": 1, "media": 3, "baja": 10}
+	onboard(domain.Setup{Template: "salud", Team: true, SLA: true, ResponseHours: hours(custom)},
+		"[Reportado En revisión Derivado a proveedor Resuelto] [] map[alta:1 baja:10 media:3] 2")
+	onboard(domain.Setup{Template: "salud", Team: true, ResponseHours: hours(custom)},
+		"[Reportado En revisión Derivado a proveedor Resuelto] [] map[alta:1 baja:12 media:4] 2")
+	if tn.Config.Modules.SLA {
+		t.Fatal("sin plazos no hay SLA")
+	}
+	custom["alta"] = 99
+	if tn.Config.ResponseHours["alta"] == 99 {
+		t.Fatal("la cuenta comparte el mapa de las respuestas")
+	}
+	// Las claves que no son prioridades se descartan.
+	onboard(domain.Setup{Template: "salud", SLA: true, ResponseHours: hours(map[string]int{"alta": 1, "media": 3, "baja": 10, "urgente": -5})},
+		"[Reportado Resuelto] [] map[alta:1 baja:10 media:3] 2")
+
+	// Esperar al solicitante: un estado más justo antes del de resolución, que es el único que pausa. También sin equipo.
+	// Sin SLA no hay reloj que pausar: se ignora.
+	onboard(domain.Setup{Template: "it", Team: true, SLA: true, WaitsRequester: true},
+		"[Nuevo En curso Esperando al solicitante Resuelto] [Esperando al solicitante] map[alta:4 baja:24 media:8] 2")
+	onboard(domain.Setup{Template: "logistica", SLA: true, WaitsRequester: true},
+		"[Nuevo Esperando al solicitante Cerrado] [Esperando al solicitante] map[alta:2 baja:48 media:8] 2")
+	onboard(domain.Setup{Template: "logistica", Team: true, WaitsRequester: true},
+		"[Nuevo Asignado En espera de repuesto Cerrado] [] map[alta:2 baja:48 media:8] 2")
+	onboard(domain.Setup{Template: "logistica", WaitsRequester: true}, "[Nuevo Cerrado] [] map[alta:2 baja:48 media:8] 2")
+	onboard(domain.Setup{Template: "logistica", Team: true, SLA: true, WaitsRequester: true},
+		"[Nuevo Asignado En espera de repuesto Esperando al solicitante Cerrado] [Esperando al solicitante] map[alta:2 baja:48 media:8] 2")
+	waiting := service.WaitingRequester
+	inc, err := sv.Incidents.Create(tid, owner, domain.NewIncident{Title: "falta un dato", Service: tn.Config.Services[0], Priority: "alta"})
+	must(t, err)
+	must(t, sv.Incidents.Update(tid, owner, inc.ID, domain.IncidentPatch{Status: &waiting}))
+	if inc.PausedAt == nil {
+		t.Fatal("esperando al solicitante el SLA de resolución se pausa")
+	}
+
+	// Días para el cierre automático.
+	onboard(domain.Setup{Template: "it", AutoCloseDays: days(5)}, "[Nuevo Resuelto] [] map[alta:4 baja:24 media:8] 5")
+
+	// Repetir el onboarding con otras respuestas deja las de la última: todo lo anterior se descarta.
+	onboard(domain.Setup{Template: "it", Team: true, SLA: true, WaitsRequester: true, AutoCloseDays: days(7),
+		ResponseHours: hours(map[string]int{"alta": 3, "media": 5, "baja": 9})},
+		"[Nuevo En curso Esperando al solicitante Resuelto] [Esperando al solicitante] map[alta:3 baja:9 media:5] 7")
+
+	// Un 0, un null o una prioridad que falta no toman lo de la plantilla: dan el error de Validate y la cuenta no cambia.
+	before := fmt.Sprintf("%q %+v", tn.Industry, tn.Config)
+	for _, bad := range []struct {
+		in   domain.Setup
+		want string
+	}{
+		{domain.Setup{SLA: true, ResponseHours: hours(map[string]int{"alta": 1, "media": 0, "baja": 12})},
+			"la primera respuesta de prioridad media tiene que ser de al menos 1 hora"},
+		{domain.Setup{SLA: true, ResponseHours: domain.Opt[map[string]int]{Set: true}}, // null
+			"la primera respuesta de prioridad alta tiene que ser de al menos 1 hora"},
+		{domain.Setup{SLA: true, ResponseHours: hours(map[string]int{"alta": 1, "media": 4})},
+			"la primera respuesta de prioridad baja tiene que ser de al menos 1 hora"},
+		{domain.Setup{SLA: true, ResponseHours: hours(map[string]int{"alta": 2, "media": 4, "baja": 12})},
+			"la primera respuesta de prioridad alta (2 h) no puede superar a la resolución (1 h)"},
+		{domain.Setup{AutoCloseDays: days(0)}, "el cierre automático necesita al menos 1 día"},
+		{domain.Setup{AutoCloseDays: domain.Opt[int]{Set: true}}, "el cierre automático necesita al menos 1 día"}, // null
+	} {
+		bad.in.Template = "salud"
+		err := sv.Setup.Onboard(tid, owner, bad.in)
+		if err == nil || err.Error() != bad.want || fmt.Sprintf("%q %+v", tn.Industry, tn.Config) != before {
+			t.Fatalf("%+v: esperaba %q sin tocar la cuenta, obtuve %v", bad.in, bad.want, err)
+		}
+	}
+
+	// Sin SLA las horas de primera respuesta ni se miran.
+	onboard(domain.Setup{Template: "logistica", ResponseHours: domain.Opt[map[string]int]{Set: true}},
+		"[Nuevo Cerrado] [] map[alta:2 baja:48 media:8] 2")
+	must(t, sv.Setup.Finish(tid, owner))
+}
+
+// Si la plantilla ya trae el estado de espera, el onboarding no lo duplica: lo reusa donde está como único estado de pausa.
+func TestOnboardingReusesWaitingState(t *testing.T) {
+	tpl := service.Template{Industry: "Prueba", Config: domain.Config{
+		Services:      []string{"Sistemas"},
+		States:        []string{"Nuevo", service.WaitingRequester, "En curso", "Resuelto"},
+		SLAHours:      map[string]int{"alta": 4, "media": 8, "baja": 24},
+		ResponseHours: map[string]int{"alta": 4, "media": 8, "baja": 24},
+		PauseStates:   []string{},
+		AutoCloseDays: domain.DefaultAutoCloseDays,
+		RecurrenceMin: 2, RecurrenceDays: 7,
+	}}
+	for _, c := range []struct {
+		in   domain.Setup
+		want string
+	}{
+		{domain.Setup{Team: true, SLA: true, WaitsRequester: true}, "[Nuevo Esperando al solicitante En curso Resuelto] [Esperando al solicitante]"},
+		{domain.Setup{Team: true, SLA: true}, "[Nuevo Esperando al solicitante En curso Resuelto] []"},
+		{domain.Setup{Team: true, WaitsRequester: true}, "[Nuevo Esperando al solicitante En curso Resuelto] []"}, // sin SLA se ignora
+		// Sin equipo el recorte se lo lleva y se vuelve a insertar antes del de resolución.
+		{domain.Setup{SLA: true, WaitsRequester: true}, "[Nuevo Esperando al solicitante Resuelto] [Esperando al solicitante]"},
+	} {
+		got, err := tpl.Build(c.in)
+		if err != nil || fmt.Sprint(got.States, got.PauseStates) != c.want {
+			t.Errorf("%+v: esperaba %s, obtuve %v %v (%v)", c.in, c.want, got.States, got.PauseStates, err)
+		}
+	}
+	if fmt.Sprint(tpl.Config.States, tpl.Config.PauseStates) != "[Nuevo Esperando al solicitante En curso Resuelto] []" {
+		t.Fatal("armar la configuración no puede tocar la plantilla")
+	}
+}
+
+// La primera respuesta de una prioridad no puede superar a su resolución (ITIL 4: primero se responde y después se
+// resuelve); igual está permitido. Vale para las plantillas, para Configuración y aunque el SLA esté apagado.
+func TestResponseNotAfterResolution(t *testing.T) {
+	sv, tn := newAccount(t)
+	for _, tpl := range sv.Setup.Templates() {
+		for _, p := range domain.Priorities {
+			if tpl.Config.ResponseHours[p] > tpl.Config.SLAHours[p] {
+				t.Errorf("plantilla %s, prioridad %s: responde en %d h y resuelve en %d h",
+					tpl.Key, p, tpl.Config.ResponseHours[p], tpl.Config.SLAHours[p])
+			}
+		}
+	}
+
+	before := fmt.Sprintf("%+v", tn.Config)
+	for _, sla := range []bool{true, false} {
+		_, c, _ := service.BuildConfig("it", service.Full) // resuelve en 4/8/24
+		c.Modules.SLA = sla
+		c.ResponseHours["media"] = 9
+		err := sv.Setup.SetConfig(tid, owner, c)
+		want := "la primera respuesta de prioridad media (9 h) no puede superar a la resolución (8 h)"
+		if err == nil || err.Error() != want || fmt.Sprintf("%+v", tn.Config) != before {
+			t.Fatalf("sla=%v: esperaba %q sin tocar la cuenta, obtuve %v", sla, want, err)
+		}
+	}
+	_, c, _ := service.BuildConfig("it", service.Full)
+	c.ResponseHours["media"], c.SLAHours["baja"], c.ResponseHours["baja"] = 8, 12, 12 // igual está permitido
+	c.SLAHours["urgente"], c.ResponseHours["urgente"] = -5, -5                        // no es una prioridad: se descarta
+	must(t, sv.Setup.SetConfig(tid, owner, c))
+	if fmt.Sprint(tn.Config.ResponseHours, tn.Config.SLAHours) != "map[alta:4 baja:12 media:8] map[alta:4 baja:12 media:8]" {
+		t.Fatalf("no se guardó o quedaron claves que no son prioridades: %v %v", tn.Config.ResponseHours, tn.Config.SLAHours)
+	}
+	if c.SLAHours["urgente"] != -5 || c.ResponseHours["urgente"] != -5 {
+		t.Fatal("descartar las claves no puede escribir sobre los mapas del pedido")
 	}
 }
 

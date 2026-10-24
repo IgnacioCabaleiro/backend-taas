@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -19,8 +20,21 @@ type Template struct {
 	Config   domain.Config `json:"config"`
 }
 
-// Full: todas las respuestas del onboarding en "sí" (cuentas de demo, vista previa).
+// Full: las respuestas del onboarding en "sí" (cuentas de demo, vista previa), salvo WaitsRequester: las plantillas
+// se muestran con su flujo tal cual (GET /api/templates) y las cuentas de demo suman ese estado por su cuenta (ver seed).
 var Full = domain.Setup{Team: true, SLA: true, Problems: true, Fields: true}
+
+// WaitingRequester: el estado que agrega el onboarding cuando hay que esperar a quien reportó. Pausa el SLA.
+const WaitingRequester = "Esperando al solicitante"
+
+// AddWaitingRequester deja WaitingRequester como único estado de pausa. Si el flujo no lo tiene, lo inserta justo
+// antes del de resolución; si ya lo tiene, lo reusa donde está. No escribe sobre el arreglo de estados recibido.
+func AddWaitingRequester(c *domain.Config) {
+	if !domain.Has(c.States, WaitingRequester) {
+		c.States = slices.Insert(slices.Clip(c.States), len(c.States)-1, WaitingRequester)
+	}
+	c.PauseStates = []string{WaitingRequester}
+}
 
 // build arma la configuración para unas respuestas. Devuelve una copia: cada cuenta edita la suya
 // sin tocar la plantilla.
@@ -38,12 +52,23 @@ func (t Template) build(in domain.Setup) (domain.Config, error) {
 		c.States = []string{c.States[0], c.States[len(c.States)-1]}
 		c.PauseStates = []string{}
 	}
-	c.SLAHours, c.ResponseHours = map[string]int{}, map[string]int{}
-	for k, v := range t.Config.SLAHours {
-		c.SLAHours[k] = v
+	if in.SLA && in.WaitsRequester {
+		// Sin SLA no hay reloj que pausar: se ignora. Con equipo, si la plantilla ya trae el estado se reusa donde está;
+		// si no, va justo antes del de resolución. Sin equipo el flujo ya se recortó a inicial y resolución (si la
+		// plantilla lo traía, se fue con el recorte) y se vuelve a insertar antes del de resolución: inicial, esperando,
+		// resolución.
+		AddWaitingRequester(&c)
 	}
-	for k, v := range t.Config.ResponseHours {
-		c.ResponseHours[k] = v
+	responseHours := t.Config.ResponseHours
+	if in.SLA && in.ResponseHours.Set {
+		// Sin SLA no se usan: quedan los de la plantilla. Un null o un 0 no cae en la plantilla: lo rechaza Validate.
+		responseHours = in.ResponseHours.Value
+	}
+	// Copias: la cuenta no comparte mapas con la plantilla ni con el pedido. Validate deja solo las prioridades
+	// (y un mapa no nil aunque la respuesta haya venido en null).
+	c.SLAHours, c.ResponseHours = maps.Clone(t.Config.SLAHours), maps.Clone(responseHours)
+	if in.AutoCloseDays.Set {
+		c.AutoCloseDays = in.AutoCloseDays.Value // null queda en 0: lo rechaza Validate
 	}
 	c.Fields = []domain.Field{}
 	if in.Fields {
