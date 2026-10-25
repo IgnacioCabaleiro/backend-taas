@@ -18,7 +18,7 @@ import (
 // Un cliente que manda el body de a poco no puede trabar al resto de los pedidos.
 func TestSlowBodyDoesNotBlock(t *testing.T) {
 	tenants, _ := repository.NewJSONTenants("")
-	h := New(service.New(tenants, repository.NewMemorySessions()))
+	h := New(service.New(tenants, repository.NewMemorySessions(), repository.NewMemoryBlobs()))
 
 	body, w := io.Pipe()
 	defer w.Close()
@@ -44,7 +44,7 @@ func TestSlowBodyDoesNotBlock(t *testing.T) {
 // Un body más grande que el límite se rechaza con 413.
 func TestBodyTooLarge(t *testing.T) {
 	tenants, _ := repository.NewJSONTenants("")
-	h := New(service.New(tenants, repository.NewMemorySessions()))
+	h := New(service.New(tenants, repository.NewMemorySessions(), repository.NewMemoryBlobs()))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/login", strings.NewReader(strings.Repeat("x", 2<<20))))
 	if rec.Code != http.StatusRequestEntityTooLarge {
@@ -54,7 +54,7 @@ func TestBodyTooLarge(t *testing.T) {
 
 func TestBodyIncomplete(t *testing.T) {
 	tenants, _ := repository.NewJSONTenants("")
-	h := New(service.New(tenants, repository.NewMemorySessions()))
+	h := New(service.New(tenants, repository.NewMemorySessions(), repository.NewMemoryBlobs()))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/login", iotest.ErrReader(io.ErrUnexpectedEOF)))
 	if rec.Code != http.StatusBadRequest {
@@ -67,7 +67,7 @@ func newServer(t *testing.T) (http.Handler, *service.Services, map[int]string) {
 	t.Helper()
 	tenants, _ := repository.NewJSONTenants("")
 	sessions := repository.NewMemorySessions()
-	svc := service.New(tenants, sessions)
+	svc := service.New(tenants, sessions, repository.NewMemoryBlobs())
 	industry, cfg, err := service.BuildConfig("it", service.Full)
 	if err != nil {
 		t.Fatal(err)

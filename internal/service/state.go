@@ -53,7 +53,7 @@ func (s *State) View(tenantID, me int) (View, error) {
 	// o gestionar problemas (las sugerencias y los problemas apuntan a incidentes de cualquiera).
 	// Quien solo reporta tampoco ve las notas internas de trabajo ni los vínculos con problemas (los problemas
 	// son internos del equipo): de la comunicación, solo las respuestas.
-	all := t.Can(me, domain.PermResolve) || t.Can(me, domain.PermPanel) || t.Can(me, domain.PermProblems)
+	all := t.SeesAll(me)
 	for _, inc := range t.Incidents {
 		switch {
 		case all:
