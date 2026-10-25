@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"taas-backend/internal/handler"
@@ -19,11 +20,23 @@ import (
 func main() {
 	addr := flag.String("addr", ":8080", "dirección en la que escucha el servidor")
 	path := flag.String("data", "data.json", "archivo de datos")
+	files := flag.String("files", "", "carpeta de los adjuntos (por defecto, «attachments» junto al archivo de datos)")
 	reset := flag.Bool("reset", false, "descarta los datos guardados y vuelve a las cuentas de demo")
 	flag.Parse()
+	defaultFiles := *files == ""
+	if defaultFiles {
+		*files = filepath.Join(filepath.Dir(*path), "attachments")
+	}
 	if *reset {
 		if err := os.Remove(*path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			log.Fatal(err)
+		}
+		// Los adjuntos de las cuentas descartadas quedarían sueltos. Solo se borra la carpeta por defecto:
+		// una indicada con -files la administra quien la pasó.
+		if defaultFiles {
+			if err := os.RemoveAll(*files); err != nil {
+				log.Fatal(err)
+			}
 		}
 	}
 
@@ -38,7 +51,7 @@ func main() {
 			}
 		}
 	}
-	svc := service.New(tenants, repository.NewMemorySessions())
+	svc := service.New(tenants, repository.NewMemorySessions(), repository.NewDiskBlobs(*files))
 
 	log.Printf("TaaS backend en %s · datos en %s", *addr, *path)
 	// Timeouts: para evitar cuelges, validar si estan bien los tiempos

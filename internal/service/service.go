@@ -12,23 +12,25 @@ import (
 )
 
 type Services struct {
-	Auth      *Auth
-	Accounts  *Accounts
-	Setup     *Setup
-	Incidents *Incidents
-	Problems  *Problems
-	State     *State
+	Auth        *Auth
+	Accounts    *Accounts
+	Setup       *Setup
+	Incidents   *Incidents
+	Problems    *Problems
+	Attachments *Attachments
+	State       *State
 }
 
-func New(tenants repository.Tenants, sessions repository.Sessions) *Services {
+func New(tenants repository.Tenants, sessions repository.Sessions, blobs repository.Blobs) *Services {
 	b := base{tenants, &sync.Mutex{}}
 	return &Services{
-		Auth:      &Auth{b, sessions},
-		Accounts:  &Accounts{b, sessions},
-		Setup:     &Setup{b},
-		Incidents: &Incidents{b},
-		Problems:  &Problems{b},
-		State:     &State{b},
+		Auth:        &Auth{b, sessions},
+		Accounts:    &Accounts{b, sessions},
+		Setup:       &Setup{b},
+		Incidents:   &Incidents{b},
+		Problems:    &Problems{b},
+		Attachments: &Attachments{b, blobs},
+		State:       &State{b},
 	}
 }
 

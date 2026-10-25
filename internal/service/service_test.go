@@ -27,7 +27,7 @@ const (
 func newAccount(t *testing.T) (*service.Services, *domain.Tenant) {
 	t.Helper()
 	tenants, _ := repository.NewJSONTenants("") // solo en memoria
-	sv := service.New(tenants, repository.NewMemorySessions())
+	sv := service.New(tenants, repository.NewMemorySessions(), repository.NewMemoryBlobs())
 	if _, err := sv.Auth.Signup("Demo", "Titular", "titular@demo.test", pass); err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestConfig(t *testing.T) {
 // Las respuestas del onboarding definen la configuración inicial de la cuenta.
 func TestOnboarding(t *testing.T) {
 	tenants, _ := repository.NewJSONTenants("")
-	sv := service.New(tenants, repository.NewMemorySessions())
+	sv := service.New(tenants, repository.NewMemorySessions(), repository.NewMemoryBlobs())
 	sv.Auth.Signup("Chica", "Titular", "chica@demo.test", pass)
 	tn, _ := tenants.Get(tid)
 	if tn.Onboarded || sv.Setup.Finish(tid, owner) == nil {
@@ -350,7 +350,7 @@ func TestFailedSaveLeavesAccountUntouched(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "data.json")
 	tenants, err := repository.NewJSONTenants(path)
 	must(t, err)
-	sv := service.New(tenants, repository.NewMemorySessions())
+	sv := service.New(tenants, repository.NewMemorySessions(), repository.NewMemoryBlobs())
 	_, err = sv.Auth.Signup("Demo", "Titular", "titular@demo.test", pass)
 	must(t, err)
 
@@ -668,7 +668,7 @@ func TestAutoClosePersists(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "data.json")
 	tenants, err := repository.NewJSONTenants(path)
 	must(t, err)
-	sv := service.New(tenants, repository.NewMemorySessions())
+	sv := service.New(tenants, repository.NewMemorySessions(), repository.NewMemoryBlobs())
 	_, err = sv.Auth.Signup("Demo", "Titular", "titular@demo.test", pass)
 	must(t, err)
 	tn, _ := tenants.Get(tid)
@@ -1188,5 +1188,86 @@ func TestReopenUnassignsDeletedUser(t *testing.T) {
 	must(t, sv.Incidents.Reopen(tid, owner, inc.ID, "otra vez"))
 	if len(inc.History) != before+1 || last(inc).Kind != domain.EvReopened {
 		t.Fatalf("sin asignado solo queda la reapertura: %+v", inc.History[before:])
+	}
+}
+
+// attachmentSetup: cuenta con un agente (2) y un solicitante (3) y un incidente #1 del solicitante.
+func attachmentSetup(t *testing.T) (*service.Services, *repository.MemoryBlobs) {
+	t.Helper()
+	tenants, _ := repository.NewJSONTenants("")
+	blobs := repository.NewMemoryBlobs()
+	sv := service.New(tenants, repository.NewMemorySessions(), blobs)
+	industry, cfg, err := service.BuildConfig("it", service.Full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tn := &domain.Tenant{Name: "Demo", Industry: industry, Onboarded: true, OwnerID: 1, Config: cfg, Roles: service.DefaultRoles(),
+		NextUserID: 4, NextRoleID: 4, Incidents: []*domain.Incident{}, Problems: []*domain.Problem{}}
+	for id, name := range []string{"Titular", "Agente", "Solicitante"} {
+		tn.Users = append(tn.Users, domain.User{ID: id + 1, Name: name, Email: name + "@demo.test", RoleID: id + 1})
+	}
+	if err := tenants.Create(tn); err != nil {
+		t.Fatal(err)
+	}
+	in := domain.NewIncident{Title: "x", Service: "VPN", Priority: "alta", Fields: map[string]string{"sede": "Remoto"}}
+	if _, err := sv.Incidents.Create(tn.ID, 3, in); err != nil {
+		t.Fatal(err)
+	}
+	return sv, blobs
+}
+
+// Un rechazo no deja archivos sueltos, y el tope de adjuntos por incidente se respeta.
+func TestAttachmentsLeaveNoOrphansAndRespectLimit(t *testing.T) {
+	sv, blobs := attachmentSetup(t)
+	if err := sv.Attachments.Add(1, 3, 1, "malo.exe", []byte("MZ")); !errors.Is(err, domain.ErrAttachment) {
+		t.Fatalf("esperaba ErrAttachment, obtuve %v", err)
+	}
+	if blobs.Len() != 0 {
+		t.Fatalf("un adjunto rechazado dejó %d archivos", blobs.Len())
+	}
+	for k := 0; k < domain.MaxAttachments; k++ {
+		if err := sv.Attachments.Add(1, 3, 1, "a.txt", []byte("x")); err != nil {
+			t.Fatalf("adjunto %d: %v", k+1, err)
+		}
+	}
+	if err := sv.Attachments.Add(1, 3, 1, "a.txt", []byte("x")); !errors.Is(err, domain.ErrAttachment) {
+		t.Fatalf("pasado el tope: esperaba ErrAttachment, obtuve %v", err)
+	}
+	if blobs.Len() != domain.MaxAttachments {
+		t.Fatalf("hay %d archivos, esperaba %d", blobs.Len(), domain.MaxAttachments)
+	}
+}
+
+// Quitar un adjunto borra también su contenido.
+func TestAttachmentRemoveDeletesContent(t *testing.T) {
+	sv, blobs := attachmentSetup(t)
+	if err := sv.Attachments.Add(1, 3, 1, "a.txt", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	v, _ := sv.State.View(1, 3)
+	if err := sv.Attachments.Remove(1, 3, 1, v.Incidents[0].Attachments[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if blobs.Len() != 0 {
+		t.Fatalf("quedaron %d archivos", blobs.Len())
+	}
+}
+
+// Si el solicitante adjunta estando resuelto, el incidente deja de cerrarse solo (como si respondiera).
+func TestAttachmentByReporterHoldsAutoClose(t *testing.T) {
+	sv, _ := attachmentSetup(t)
+	status := "Resuelto"
+	if err := sv.Incidents.Update(1, 2, 1, domain.IncidentPatch{Status: &status, ResolutionCode: "solucionado", ResolutionNote: "listo"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sv.Attachments.Add(1, 3, 1, "sigue.png", []byte("x")); !errors.Is(err, domain.ErrAttachment) {
+		t.Fatalf("png falso: %v", err)
+	}
+	if err := sv.Attachments.Add(1, 3, 1, "sigue.txt", []byte("sigue pasando")); err != nil {
+		t.Fatal(err)
+	}
+	v, _ := sv.State.View(1, 2)
+	if !v.Incidents[0].AutoCloseHold {
+		t.Fatal("el incidente resuelto sigue pudiendo cerrarse solo")
 	}
 }

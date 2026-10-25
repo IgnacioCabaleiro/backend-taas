@@ -102,6 +102,9 @@ func (t *Tenant) Normalize() {
 		if inc.History == nil {
 			inc.History = []Event{} // los incidentes viejos no tienen historial: no se inventa
 		}
+		if inc.Attachments == nil {
+			inc.Attachments = []Attachment{}
+		}
 	}
 }
 
@@ -143,6 +146,12 @@ func (t *Tenant) Can(userID int, perm string) bool {
 	}
 	r := t.Role(u.RoleID)
 	return r != nil && Has(r.Perms, perm)
+}
+
+// SeesAll indica si el usuario ve los incidentes de todos. Para eso hace falta resolver tickets, ver el panel
+// o gestionar problemas (las sugerencias y los problemas apuntan a incidentes de cualquiera). Quien no, solo ve los suyos.
+func (t *Tenant) SeesAll(userID int) bool {
+	return t.Can(userID, PermResolve) || t.Can(userID, PermPanel) || t.Can(userID, PermProblems)
 }
 
 func (t *Tenant) Incident(id int) (*Incident, error) {
