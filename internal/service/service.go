@@ -18,6 +18,7 @@ type Services struct {
 	Incidents   *Incidents
 	Problems    *Problems
 	Attachments *Attachments
+	Metrics     *Metrics
 	State       *State
 }
 
@@ -30,6 +31,7 @@ func New(tenants repository.Tenants, sessions repository.Sessions, blobs reposit
 		Incidents:   &Incidents{b},
 		Problems:    &Problems{b},
 		Attachments: &Attachments{b, blobs},
+		Metrics:     &Metrics{b},
 		State:       &State{b},
 	}
 }

@@ -115,6 +115,7 @@ Salvo alta, login y plantillas, todo requiere `Authorization: Bearer <token>` y 
 | `POST /api/login` · `POST /api/logout` | abre y cierra sesión | — |
 | `GET /api/templates` | plantillas de rubro para el onboarding | — |
 | `GET /api/state` | estado de la cuenta | sesión |
+| `GET /api/metrics/sla?days=30` | métricas de SLA (`days`: 7, 30 o 90). Responde con los indicadores, no con el estado de la cuenta | `panel`, y módulo SLA activo |
 | `POST /api/onboarding` | aplica las respuestas del onboarding: rubro, servicios y cómo trabaja el cliente (equipo, plazos, recurrencia, datos propios). Repetible hasta terminar | `config` |
 | `POST /api/onboarding/finish` | da por terminado el onboarding | `config` |
 | `PUT /api/config` | módulos, servicios, estados, campos, SLA (resolución y primera respuesta), estados de pausa, días para el cierre automático y regla de recurrencia | `config` |
@@ -132,3 +133,14 @@ Salvo alta, login y plantillas, todo requiere `Authorization: Bearer <token>` y 
 
 Permisos: `panel`, `crear`, `resolver`, `problemas`, `config`. Un 403 es "no es tuyo" o "tu rol no puede"; pedir algo
 que la etapa del incidente no permite (por ejemplo, reabrir uno cerrado) es un 400.
+
+## Métricas de SLA
+
+`GET /api/metrics/sla?days=7|30|90` calcula, sobre los incidentes **creados** en el período:
+
+- `total`: cumplimiento de la **resolución** y de la **primera respuesta** (`measured`, `late`, `compliance` en %) y los tiempos medios (`avgResolutionHours`, `avgResponseHours`, de la creación a la resolución o a la primera respuesta).
+- `byPriority`, `byService`, `byAssignee`: lo mismo por prioridad, por servicio y por quien lo tiene asignado hoy (`id: 0` = sin asignar).
+- `trend`: el período en tramos iguales (7 → 7, 30 → 6, 90 → 9), según cuándo se creó cada incidente.
+- `atRisk`: los abiertos que **ya vencieron o vencen en las próximas 4 horas**, de cualquier fecha. Un incidente en pausa no figura por la resolución (el reloj está detenido).
+
+Qué se mide: un incidente cuenta cuando ya se sabe si cumplió (se resolvió o respondió, o sigue abierto y ya venció). Uno abierto que todavía está en plazo no cuenta ni a favor ni en contra, y `compliance` es `null` si no hay nada medible (no se inventa un 0 %). Los incidentes registrados sin el módulo SLA no tienen vencimientos: no entran en el cumplimiento, sí en los tiempos medios. Los tiempos medios son de pared (no descuentan las pausas); el cumplimiento sí, porque `dueAt` ya las descuenta.

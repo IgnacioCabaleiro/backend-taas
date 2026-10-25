@@ -34,6 +34,7 @@ func New(svc *service.Services) http.Handler {
 
 	// Con sesión: todo responde con el estado de la cuenta (ver authed).
 	mux.HandleFunc("GET /api/state", h.authed(h.state))
+	mux.HandleFunc("GET /api/metrics/sla", h.slaMetrics)
 	mux.HandleFunc("POST /api/onboarding", h.authed(h.onboard))
 	mux.HandleFunc("POST /api/onboarding/finish", h.authed(h.finishOnboarding))
 	mux.HandleFunc("PUT /api/config", h.authed(h.setConfig))

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 
 	"taas-backend/internal/domain"
 )
@@ -46,6 +47,27 @@ func (h *Handler) reopenIncident(r *http.Request, tenantID, userID int) error {
 
 func (h *Handler) closeIncident(r *http.Request, tenantID, userID int) error {
 	return h.svc.Incidents.Close(tenantID, userID, pathID(r))
+}
+
+// Métricas de SLA: responde con los indicadores (no con el estado de la cuenta, como el resto).
+func (h *Handler) slaMetrics(w http.ResponseWriter, r *http.Request) {
+	tenantID, userID, err := h.svc.Auth.Authenticate(bearer(r))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	days := 30
+	if q := r.URL.Query().Get("days"); q != "" {
+		if days, err = strconv.Atoi(q); err != nil {
+			days = 0 // el servicio lo rechaza con el mensaje de los períodos válidos
+		}
+	}
+	m, err := h.svc.Metrics.SLA(tenantID, userID, days)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
 }
 
 func (h *Handler) createProblem(r *http.Request, tenantID, userID int) error {
