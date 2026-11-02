@@ -23,7 +23,7 @@ Para cambiar el almacenamiento (por ejemplo a MySQL) alcanza con otra implementa
 
 ```bash
 go run ./cmd/api            # http://localhost:8080
-go run ./cmd/api -reset     # descarta data.json y vuelve a las cuentas de demo
+go run ./cmd/api -reset     # descarta data.json y los adjuntos, y vuelve a las cuentas de demo
 go test ./...
 ```
 
@@ -81,6 +81,18 @@ Cada paso queda en el `history` del incidente:
 | `reabierto` | reapertura: `De X a Y: motivo` (un solo evento) |
 | `cerrado` | cierre: `Cerrado por Nombre`, o automático con `userId: 0` (`Cerrado automáticamente tras N días sin actividad`) |
 | `relacionado` | en un cerrado, al registrar un incidente que lo continúa (`Se registró #m relacionado`) |
+| `adjunto` | al adjuntar o quitar un archivo (`Adjuntó informe.pdf` / `Quitó el adjunto informe.pdf`): lo ven todos |
+
+## Adjuntos
+
+Un incidente puede tener hasta 10 archivos (`attachments` en el incidente: `id`, `name`, `size`, `contentType`, `uploadedBy`, `uploadedAt`).
+El contenido no va en `data.json`: se guarda en la carpeta `attachments/` junto al archivo de datos (`-files` para cambiarla; en Docker
+vive en el volumen `/data`). `-reset` borra la carpeta por defecto. Para pasar a un bucket alcanza con otra implementación de `repository.Blobs`.
+
+- **Quién**: quien atiende el incidente (`resolver`) adjunta y quita en cualquiera; quien lo reportó, solo en los suyos y solo quita lo que subió él. En un cerrado no se toca nada. Si quien lo reportó adjunta estando resuelto, pasa lo mismo que si respondiera (`autoCloseHold`).
+- **Quién los ve**: cualquiera que vea el incidente, **incluido quien lo reportó**: no hay adjuntos internos, así que lo que sea solo del equipo va en una nota.
+- **Qué se acepta**: hasta 5 MB por archivo; `.png .jpg .jpeg .gif .webp .pdf .txt .log .csv .zip`. El servidor decide el tipo por la extensión (no confía en el del cliente) y verifica que el contenido sea de lo que dice (una imagen que no lo es, o un texto con bytes nulos, se rechaza). El nombre se limpia de carpetas y caracteres de control.
+- **Descarga**: siempre como `attachment`, con `X-Content-Type-Options: nosniff`, para que un archivo subido nunca se ejecute en el navegador. Requiere el token en el header, así que el front la hace con `fetch` y no con un `<a href>`.
 
 ## Cuentas de demo
 
@@ -108,6 +120,7 @@ Salvo alta, login y plantillas, todo requiere `Authorization: Bearer <token>` y 
 | `POST /api/login` · `POST /api/logout` | abre y cierra sesión | — |
 | `GET /api/templates` | plantillas de rubro para el onboarding | — |
 | `GET /api/state` | estado de la cuenta | sesión |
+| `GET /api/metrics/sla?days=30` | métricas de SLA (`days`: 7, 30 o 90). Responde con los indicadores, no con el estado de la cuenta | `panel`, y módulo SLA activo |
 | `POST /api/onboarding` | aplica las respuestas del onboarding: rubro, servicios y cómo trabaja el cliente (equipo, plazos, recurrencia, datos propios, si espera a quien reportó). Opcionales: `responseHours` y `waitsRequester` (los dos solo con `sla`) y `autoCloseDays` (ver abajo). Repetible hasta terminar: cada vez se arma de nuevo desde la plantilla | `config` |
 | `POST /api/onboarding/finish` | da por terminado el onboarding | `config` |
 | `PUT /api/config` | módulos, servicios, estados, campos, SLA (resolución y primera respuesta, que no puede superarla), estados de pausa, días para el cierre automático y regla de recurrencia | `config` |
@@ -118,6 +131,9 @@ Salvo alta, login y plantillas, todo requiere `Authorization: Bearer <token>` y 
 | `POST /api/incidents/{id}/comments` | `{text, public}`: respuesta (`public: true`) o nota interna. Quien lo reportó solo publica respuestas en los suyos | `resolver`, o quien lo reportó |
 | `POST /api/incidents/{id}/reopen` | `{reason}`: reabre un incidente resuelto (no uno cerrado) | `resolver` |
 | `POST /api/incidents/{id}/close` | `{}`: cierra un incidente resuelto | `resolver` |
+| `POST /api/incidents/{id}/attachments` | `multipart/form-data` con el archivo en el campo `file`: adjunta (responde con el estado de la cuenta) | `resolver`, o quien lo reportó |
+| `GET /api/incidents/{id}/attachments/{aid}` | descarga el archivo | quien ve el incidente |
+| `DELETE /api/incidents/{id}/attachments/{aid}` | quita el adjunto | `resolver`, o quien lo subió |
 | `POST /api/problems` · `/{id}/advance` · `/{id}/owner` · `/{id}/comments` | gestión de problemas. Crear un problema con `incidentIds` vincula esos incidentes, también los cerrados. El responsable (`ownerId`) tiene que tener `problemas` | `problemas` |
 
 El onboarding arma la configuración desde la plantilla del rubro (`GET /api/templates`, que el front usa para precargar) y
@@ -138,3 +154,14 @@ prioridad, o una primera respuesta que supera a la resolución de la plantilla) 
 
 Permisos: `panel`, `crear`, `resolver`, `problemas`, `config`. Un 403 es "no es tuyo" o "tu rol no puede"; pedir algo
 que la etapa del incidente no permite (por ejemplo, reabrir uno cerrado) es un 400.
+
+## Métricas de SLA
+
+`GET /api/metrics/sla?days=7|30|90` calcula, sobre los incidentes **creados** en el período:
+
+- `total`: cumplimiento de la **resolución** y de la **primera respuesta** (`measured`, `late`, `compliance` en %) y los tiempos medios (`avgResolutionHours`, `avgResponseHours`, de la creación a la resolución o a la primera respuesta).
+- `byPriority`, `byService`, `byAssignee`: lo mismo por prioridad, por servicio y por quien lo tiene asignado hoy (`id: 0` = sin asignar).
+- `trend`: el período en tramos iguales (7 → 7, 30 → 6, 90 → 9), según cuándo se creó cada incidente.
+- `atRisk`: los abiertos que **ya vencieron o vencen en las próximas 4 horas**, de cualquier fecha. Un incidente en pausa no figura por la resolución (el reloj está detenido).
+
+Qué se mide: un incidente cuenta cuando ya se sabe si cumplió (se resolvió o respondió, o sigue abierto y ya venció). Uno abierto que todavía está en plazo no cuenta ni a favor ni en contra, y `compliance` es `null` si no hay nada medible (no se inventa un 0 %). Los incidentes registrados sin el módulo SLA no tienen vencimientos: no entran en el cumplimiento, sí en los tiempos medios. Los tiempos medios son de pared (no descuentan las pausas); el cumplimiento sí, porque `dueAt` ya las descuenta.

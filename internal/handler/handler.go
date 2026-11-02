@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -33,6 +34,7 @@ func New(svc *service.Services) http.Handler {
 
 	// Con sesión: todo responde con el estado de la cuenta (ver authed).
 	mux.HandleFunc("GET /api/state", h.authed(h.state))
+	mux.HandleFunc("GET /api/metrics/sla", h.slaMetrics)
 	mux.HandleFunc("POST /api/onboarding", h.authed(h.onboard))
 	mux.HandleFunc("POST /api/onboarding/finish", h.authed(h.finishOnboarding))
 	mux.HandleFunc("PUT /api/config", h.authed(h.setConfig))
@@ -49,6 +51,9 @@ func New(svc *service.Services) http.Handler {
 	mux.HandleFunc("POST /api/incidents/{id}/comments", h.authed(h.commentIncident))
 	mux.HandleFunc("POST /api/incidents/{id}/reopen", h.authed(h.reopenIncident))
 	mux.HandleFunc("POST /api/incidents/{id}/close", h.authed(h.closeIncident))
+	mux.HandleFunc("POST /api/incidents/{id}/attachments", h.authed(h.addAttachment))
+	mux.HandleFunc("GET /api/incidents/{id}/attachments/{aid}", h.downloadAttachment)
+	mux.HandleFunc("DELETE /api/incidents/{id}/attachments/{aid}", h.authed(h.removeAttachment))
 	mux.HandleFunc("POST /api/problems", h.authed(h.createProblem))
 	mux.HandleFunc("POST /api/problems/{id}/advance", h.authed(h.advanceProblem))
 	mux.HandleFunc("POST /api/problems/{id}/owner", h.authed(h.setProblemOwner))
@@ -68,11 +73,19 @@ func (h *Handler) middleware(next http.Handler) http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+		limit := int64(1 << 20)
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/attachments") {
+			limit = uploadLimit // las subidas de adjuntos son lo único que puede pasar de 1 MB
+		}
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 		var tooLarge *http.MaxBytesError
 		switch {
 		case errors.As(err, &tooLarge):
-			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "el pedido es demasiado grande"})
+			msg := "el pedido es demasiado grande"
+			if limit == uploadLimit {
+				msg = fmt.Sprintf("el archivo pesa más de %d MB", domain.MaxAttachmentSize>>20)
+			}
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": msg})
 			return
 		case err != nil:
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "el pedido llegó incompleto"})

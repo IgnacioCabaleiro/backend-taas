@@ -43,6 +43,8 @@ type Incident struct {
 	// AutoCloseHold: quien lo reportó respondió estando resuelto; ya no se cierra solo (ver Tenant.AutoClose).
 	AutoCloseHold     bool `json:"autoCloseHold"`
 	RelatedIncidentID int  `json:"relatedIncidentId"` // incidente cerrado del que es continuación; 0 = ninguno
+	// Archivos adjuntos (ver Attachment). Los ve cualquiera que vea el incidente.
+	Attachments []Attachment `json:"attachments"`
 }
 
 // ErrClosed: un incidente cerrado es de solo lectura.
@@ -66,6 +68,7 @@ const (
 	EvReopened = "reabierto"   // reapertura: "De X a Y: motivo"
 	EvClosed   = "cerrado"     // cierre, a mano o automático (userId 0)
 	EvRelated  = "relacionado" // en un cerrado: se registró un incidente relacionado
+	EvAttached = "adjunto"     // se agregó o se quitó un archivo adjunto
 )
 
 // ClosingCodes: los códigos con los que resolver también cierra (no hay nada que confirmar).

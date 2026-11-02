@@ -48,7 +48,7 @@ func (s *Incidents) Create(tenantID, by int, in domain.NewIncident) (inc *domain
 		now := time.Now()
 		inc = &domain.Incident{ID: len(t.Incidents) + 1, Title: in.Title, Description: in.Description, Service: in.Service,
 			Priority: in.Priority, Status: t.Config.States[0], Fields: fields, CreatedBy: by, CreatedAt: now,
-			History: []domain.Event{}, RelatedIncidentID: in.RelatedIncidentID}
+			History: []domain.Event{}, Attachments: []domain.Attachment{}, RelatedIncidentID: in.RelatedIncidentID}
 		if related != nil {
 			inc.Log(now, by, domain.EvCreated, "Incidente registrado (relacionado con #%d)", related.ID)
 			// La única escritura sobre un cerrado: queda constancia de su continuación.
