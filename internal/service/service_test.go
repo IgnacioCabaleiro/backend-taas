@@ -1271,3 +1271,130 @@ func TestAttachmentByReporterHoldsAutoClose(t *testing.T) {
 		t.Fatal("el incidente resuelto sigue pudiendo cerrarse solo")
 	}
 }
+
+// Cada cambio de configuración es una versión, y volver a una anterior no pierde historial ni tickets.
+func TestConfigVersions(t *testing.T) {
+	sv, tn := newAccount(t)
+	if len(tn.ConfigVersions) != 1 {
+		t.Fatalf("el onboarding deja la primera versión: %d", len(tn.ConfigVersions))
+	}
+	inc, _ := sv.Incidents.Create(tid, agent, vpn("x"))
+	enCurso := "En curso"
+	must(t, sv.Incidents.Update(tid, agent, inc.ID, domain.IncidentPatch{Status: &enCurso}))
+
+	c := tn.Config.Clone()
+	must(t, sv.Setup.SetConfig(tid, owner, c))
+	if len(tn.ConfigVersions) != 1 {
+		t.Fatal("guardar sin cambios no crea una versión")
+	}
+
+	c.States[1] = "Trabajando"
+	sla := c.SLAHours["alta"]
+	c.SLAHours["alta"] = sla + 5
+	must(t, sv.Setup.SetConfig(tid, owner, c))
+	v2 := tn.ConfigVersions[1]
+	if v2.ID != 2 || v2.UserID != owner || len(v2.Changes) != 2 || inc.Status != "Trabajando" {
+		t.Fatalf("versión 2 mal registrada: %+v, estado %q", v2, inc.Status)
+	}
+	if sv.Setup.RestoreVersion(tid, agent, 1) == nil {
+		t.Fatal("un agente no puede restaurar")
+	}
+	if sv.Setup.RestoreVersion(tid, owner, 2) == nil {
+		t.Fatal("restaurar la versión vigente no tiene efecto")
+	}
+	if sv.Setup.RestoreVersion(tid, owner, 99) == nil {
+		t.Fatal("la versión tiene que existir")
+	}
+
+	must(t, sv.Setup.RestoreVersion(tid, owner, 1))
+	v3 := tn.ConfigVersions[2]
+	if len(tn.ConfigVersions) != 3 || v3.RestoredFrom != 1 || tn.Config.SLAHours["alta"] != sla {
+		t.Fatalf("restaurar crea una versión nueva con el contenido anterior: %+v", v3)
+	}
+	if inc.Status != "En curso" {
+		t.Fatalf("los tickets siguen al estado renombrado: %q", inc.Status)
+	}
+	tn.Config.Services[0] = "pisado"
+	if tn.ConfigVersions[2].Config.Services[0] == "pisado" || tn.ConfigVersions[0].Config.Services[0] == "pisado" {
+		t.Fatal("las versiones no comparten datos con la configuración vigente")
+	}
+	tn.Config.Services[0] = "VPN"
+
+	// Se puede deshacer la vuelta atrás, y sigue sin borrarse nada.
+	must(t, sv.Setup.RestoreVersion(tid, owner, 2))
+	if len(tn.ConfigVersions) != 4 || tn.Config.SLAHours["alta"] != sla+5 || inc.Status != "Trabajando" {
+		t.Fatalf("no se deshizo: %d versiones, estado %q", len(tn.ConfigVersions), inc.Status)
+	}
+
+	// Solo quien configura ve el historial.
+	if v, _ := sv.State.View(tid, agent); len(v.ConfigVersions) != 0 {
+		t.Fatal("un agente no ve el historial de configuración")
+	}
+	if v, _ := sv.State.View(tid, owner); len(v.ConfigVersions) != 4 {
+		t.Fatal("el titular ve todo el historial")
+	}
+}
+
+// Una cuenta guardada antes del historial no pierde su configuración original con el primer cambio.
+func TestFirstVersionKeepsOriginal(t *testing.T) {
+	sv, tn := newAccount(t)
+	tn.ConfigVersions = nil
+	original := tn.Config.SLAHours["alta"]
+	c := tn.Config.Clone()
+	c.SLAHours["alta"] = original + 1
+	must(t, sv.Setup.SetConfig(tid, owner, c))
+	if len(tn.ConfigVersions) != 2 || tn.ConfigVersions[0].Config.SLAHours["alta"] != original || tn.ConfigVersions[1].Config.SLAHours["alta"] != original+1 {
+		t.Fatalf("la versión 1 tiene que ser la configuración anterior: %+v", tn.ConfigVersions)
+	}
+}
+
+// Volver a una versión que no tiene un estado en uso: los abiertos van al inicial con registro, los resueltos no se reabren.
+func TestRestoreRemovesState(t *testing.T) {
+	sv, tn := newAccount(t)
+	c := tn.Config.Clone()
+	final := c.States[len(c.States)-1]
+	c.States = append(c.States[:len(c.States)-1], "Esperando", final)
+	c.PauseStates = []string{"Esperando"}
+	must(t, sv.Setup.SetConfig(tid, owner, c))
+	open, _ := sv.Incidents.Create(tid, agent, vpn("abierto"))
+	done, _ := sv.Incidents.Create(tid, agent, vpn("resuelto"))
+	esperando := "Esperando"
+	must(t, sv.Incidents.Update(tid, agent, open.ID, domain.IncidentPatch{Status: &esperando}))
+	must(t, sv.Incidents.Update(tid, agent, done.ID, domain.IncidentPatch{Status: &final, ResolutionCode: "solucionado", ResolutionNote: "listo"}))
+	if open.PausedAt == nil {
+		t.Fatal("el estado de espera debería pausar el SLA")
+	}
+
+	must(t, sv.Setup.RestoreVersion(tid, owner, 1))
+	if open.Status != tn.Config.States[0] || open.PausedAt != nil {
+		t.Fatalf("el abierto vuelve al estado inicial y se reanuda el SLA: %q %v", open.Status, open.PausedAt)
+	}
+	if last := open.History[len(open.History)-1]; last.Kind != domain.EvStatus {
+		t.Fatalf("el movimiento tiene que quedar en el historial del ticket: %+v", last)
+	}
+	if done.ResolvedAt == nil || done.Status != final {
+		t.Fatalf("restaurar no reabre un resuelto: %q", done.Status)
+	}
+	if len(tn.Config.PauseStates) != 0 {
+		t.Fatalf("la versión 1 no pausa en ningún estado: %v", tn.Config.PauseStates)
+	}
+}
+
+// Durante el onboarding no hay versiones: el historial arranca con la configuración que quedó al terminar.
+func TestNoVersionsBeforeOnboarding(t *testing.T) {
+	tenants, _ := repository.NewJSONTenants("")
+	sv := service.New(tenants, repository.NewMemorySessions(), repository.NewMemoryBlobs())
+	sv.Auth.Signup("Nueva", "Titular", "nueva@demo.test", pass)
+	tn, _ := tenants.Get(tid)
+	must(t, sv.Setup.Onboard(tid, owner, domain.Setup{Template: "salud", Team: true}))
+	c := tn.Config.Clone()
+	c.Services = append(c.Services, "Otro")
+	must(t, sv.Setup.SetConfig(tid, owner, c))
+	if len(tn.ConfigVersions) != 0 {
+		t.Fatalf("todavía no debería haber versiones: %d", len(tn.ConfigVersions))
+	}
+	must(t, sv.Setup.Finish(tid, owner))
+	if len(tn.ConfigVersions) != 1 || !domain.Has(tn.ConfigVersions[0].Config.Services, "Otro") {
+		t.Fatalf("la primera versión es la configuración final del onboarding: %+v", tn.ConfigVersions)
+	}
+}

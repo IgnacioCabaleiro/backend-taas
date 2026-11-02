@@ -68,6 +68,8 @@ type Tenant struct {
 	NextRoleID int         `json:"nextRoleId"`
 	Incidents  []*Incident `json:"incidents"`
 	Problems   []*Problem  `json:"problems"`
+	// Historial de la configuración, de la más vieja a la vigente (ver ConfigVersion).
+	ConfigVersions []ConfigVersion `json:"configVersions"`
 }
 
 func (t *Tenant) Clone() *Tenant {
@@ -97,6 +99,9 @@ func (t *Tenant) Normalize() {
 	}
 	if c.AutoCloseDays == 0 { // ausente: 0 no es un valor válido (ver Config.Validate)
 		c.AutoCloseDays = DefaultAutoCloseDays
+	}
+	if t.Onboarded {
+		t.EnsureFirstVersion(time.Now(), t.OwnerID) // cuentas guardadas antes de que existiera el historial
 	}
 	for _, inc := range t.Incidents {
 		if inc.History == nil {

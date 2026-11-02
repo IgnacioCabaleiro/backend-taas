@@ -38,6 +38,7 @@ func New(svc *service.Services) http.Handler {
 	mux.HandleFunc("POST /api/onboarding", h.authed(h.onboard))
 	mux.HandleFunc("POST /api/onboarding/finish", h.authed(h.finishOnboarding))
 	mux.HandleFunc("PUT /api/config", h.authed(h.setConfig))
+	mux.HandleFunc("POST /api/config/versions/{id}/restore", h.authed(h.restoreConfigVersion))
 
 	mux.HandleFunc("POST /api/users", h.authed(h.addUser))
 	mux.HandleFunc("PUT /api/users/{id}", h.authed(h.setUserRole))

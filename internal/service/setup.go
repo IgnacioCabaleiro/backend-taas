@@ -103,61 +103,92 @@ func (s *Setup) Finish(tenantID, by int) error {
 			return errors.New("falta configurar la ticketera")
 		}
 		t.Onboarded = true
+		t.EnsureFirstVersion(time.Now(), by)
 		return nil
 	})
 }
 
 func (s *Setup) SetConfig(tenantID, by int, c domain.Config) error {
 	return s.update(tenantID, by, domain.PermConfig, func(t *domain.Tenant) error {
-		// Los estados de pausa se validan después de renombrarlos: pueden venir con el nombre viejo de un estado renombrado.
-		pause := c.PauseStates
-		c.PauseStates = nil
-		if err := c.Validate(); err != nil {
-			return err
-		}
-		// Ítems renombrados en el lugar: los datos existentes siguen al nombre nuevo (ver renames).
-		states, services := renames(t.Config.States, c.States), renames(t.Config.Services, c.Services)
-		c.PauseStates = []string{}
-		for _, p := range pause {
-			p = strings.TrimSpace(p)
-			if n, ok := states[p]; ok {
-				p = n
-			}
-			c.PauseStates = append(c.PauseStates, p)
-		}
-		if err := c.ValidatePauseStates(); err != nil {
-			return err
-		}
-
-		t.Config = c
-		for _, p := range t.Problems {
-			if n, ok := services[p.Service]; ok {
-				p.Service = n
-			}
-		}
-		// Incidentes que quedaron en un estado eliminado: vuelven al inicial (o al de resolución si ya estaban resueltos
-		// o cerrados: el servicio y el estado de un cerrado se siguen migrando para que apunten a la configuración vigente).
-		// Después se recalcula la pausa de los abiertos: se detiene o se reanuda según el estado en el que quedaron.
-		now := time.Now()
-		for _, inc := range t.Incidents {
-			if n, ok := services[inc.Service]; ok {
-				inc.Service = n
-			}
-			if n, ok := states[inc.Status]; ok {
-				inc.Status = n
-			}
-			if inc.ResolvedAt != nil {
-				inc.Status = t.ResolvedState()
-				continue
-			}
-			if !domain.Has(c.States[:len(c.States)-1], inc.Status) {
-				inc.Log(now, by, domain.EvStatus, "De %s a %s (se eliminó el estado %s)", inc.Status, c.States[0], inc.Status)
-				inc.Status = c.States[0]
-			}
-			inc.SyncPause(c.PauseStates, now)
-		}
-		return nil
+		return applyConfig(t, by, c, 0)
 	})
+}
+
+// RestoreVersion vuelve a una versión anterior: no borra historial, crea una versión nueva con ese contenido.
+// Pasa por el mismo camino que guardar, así los tickets existentes se migran igual que en cualquier otro cambio.
+func (s *Setup) RestoreVersion(tenantID, by, versionID int) error {
+	return s.update(tenantID, by, domain.PermConfig, func(t *domain.Tenant) error {
+		v, err := t.Version(versionID)
+		if err != nil {
+			return err
+		}
+		if len(domain.ConfigChanges(t.Config, v.Config)) == 0 {
+			return errors.New("esa versión es igual a la configuración vigente")
+		}
+		return applyConfig(t, by, v.Config, v.ID)
+	})
+}
+
+// applyConfig valida la configuración nueva, migra los datos existentes y registra la versión.
+func applyConfig(t *domain.Tenant, by int, c domain.Config, restoredFrom int) error {
+	c = c.Clone() // la cuenta se queda con su propia copia
+	// Los estados de pausa se validan después de renombrarlos: pueden venir con el nombre viejo de un estado renombrado.
+	pause := c.PauseStates
+	c.PauseStates = nil
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	// Ítems renombrados en el lugar: los datos existentes siguen al nombre nuevo (ver renames).
+	states, services := renames(t.Config.States, c.States), renames(t.Config.Services, c.Services)
+	c.PauseStates = []string{}
+	for _, p := range pause {
+		p = strings.TrimSpace(p)
+		if n, ok := states[p]; ok {
+			p = n
+		}
+		c.PauseStates = append(c.PauseStates, p)
+	}
+	if err := c.ValidatePauseStates(); err != nil {
+		return err
+	}
+
+	// Guardar sin cambios no crea una versión, y durante el onboarding todavía no hay historial (ver Setup.Finish).
+	changes := domain.ConfigChanges(t.Config, c)
+	versioned := t.Onboarded && len(changes) > 0
+	if versioned {
+		t.EnsureFirstVersion(time.Now(), by) // antes de pisarla: la primera versión es la configuración de hasta ahora
+	}
+	t.Config = c
+	if versioned {
+		t.AddVersion(time.Now(), by, changes, restoredFrom)
+	}
+	for _, p := range t.Problems {
+		if n, ok := services[p.Service]; ok {
+			p.Service = n
+		}
+	}
+	// Incidentes que quedaron en un estado eliminado: vuelven al inicial (o al de resolución si ya estaban resueltos
+	// o cerrados: el servicio y el estado de un cerrado se siguen migrando para que apunten a la configuración vigente).
+	// Después se recalcula la pausa de los abiertos: se detiene o se reanuda según el estado en el que quedaron.
+	now := time.Now()
+	for _, inc := range t.Incidents {
+		if n, ok := services[inc.Service]; ok {
+			inc.Service = n
+		}
+		if n, ok := states[inc.Status]; ok {
+			inc.Status = n
+		}
+		if inc.ResolvedAt != nil {
+			inc.Status = t.ResolvedState()
+			continue
+		}
+		if !domain.Has(c.States[:len(c.States)-1], inc.Status) {
+			inc.Log(now, by, domain.EvStatus, "De %s a %s (se eliminó el estado %s)", inc.Status, c.States[0], inc.Status)
+			inc.Status = c.States[0]
+		}
+		inc.SyncPause(c.PauseStates, now)
+	}
+	return nil
 }
 
 // renames detecta los ítems renombrados en el lugar: con la misma cantidad de ítems, la posición

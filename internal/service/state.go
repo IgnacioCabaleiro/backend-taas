@@ -25,6 +25,8 @@ type View struct {
 	Incidents   []*domain.Incident  `json:"incidents"`
 	Problems    []*domain.Problem   `json:"problems"`
 	Suggestions []domain.Suggestion `json:"suggestions"`
+	// Historial de la configuración: solo para quien puede configurar.
+	ConfigVersions []domain.ConfigVersion `json:"configVersions"`
 }
 
 func (s *State) View(tenantID, me int) (View, error) {
@@ -44,7 +46,10 @@ func (s *State) View(tenantID, me int) (View, error) {
 	}
 	v := View{ID: t.ID, Name: t.Name, Industry: t.Industry, Onboarded: t.Onboarded, OwnerID: t.OwnerID, Me: me,
 		MaxUsers: domain.MaxUsers, Config: t.Config, Roles: t.Roles,
-		Incidents: []*domain.Incident{}, Problems: []*domain.Problem{}, Suggestions: []domain.Suggestion{}}
+		Incidents: []*domain.Incident{}, Problems: []*domain.Problem{}, Suggestions: []domain.Suggestion{}, ConfigVersions: []domain.ConfigVersion{}}
+	if t.Can(me, domain.PermConfig) {
+		v.ConfigVersions = t.ConfigVersions
+	}
 	for _, u := range t.Users {
 		u.Hash = ""
 		v.Users = append(v.Users, u)

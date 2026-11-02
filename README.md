@@ -119,6 +119,7 @@ Salvo alta, login y plantillas, todo requiere `Authorization: Bearer <token>` y 
 | `POST /api/onboarding` | aplica las respuestas del onboarding: rubro, servicios y cómo trabaja el cliente (equipo, plazos, recurrencia, datos propios). Repetible hasta terminar | `config` |
 | `POST /api/onboarding/finish` | da por terminado el onboarding | `config` |
 | `PUT /api/config` | módulos, servicios, estados, campos, SLA (resolución y primera respuesta), estados de pausa, días para el cierre automático y regla de recurrencia | `config` |
+| `POST /api/config/versions/{id}/restore` | vuelve a una versión anterior de la configuración; crea una versión nueva, el historial no se borra | `config` |
 | `POST /api/users` · `PUT/DELETE /api/users/{id}` | hasta 5 usuarios además del titular. Un cambio de rol que le saca `resolver` a quien tiene incidentes abiertos asignados, o `problemas` a quien es responsable de un problema activo (no resuelto), se rechaza: hay que reasignarlos primero | `config` |
 | `POST /api/roles` · `PUT/DELETE /api/roles/{id}` | roles con permisos a medida. Un rol no pierde `resolver` mientras alguno de sus usuarios tenga incidentes abiertos asignados, ni `problemas` mientras alguno sea responsable de un problema activo | `config` |
 | `POST /api/incidents` | registra un incidente. `assigneeId` tiene que ser alguien con `resolver` (0 = sin asignar). `relatedIncidentId` lo relaciona con uno cerrado (quien solo reporta, con uno suyo) | `crear` |
