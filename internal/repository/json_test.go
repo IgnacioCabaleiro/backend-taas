@@ -73,3 +73,33 @@ func TestLoadZeroAutoCloseDays(t *testing.T) {
 		t.Fatalf("autoCloseDays=%d", tn.Config.AutoCloseDays)
 	}
 }
+
+// El historial de versiones sobrevive al reinicio, y una cuenta de antes del historial arranca con su versión 1.
+func TestConfigVersionsPersist(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.json")
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tenants, err := repository.NewJSONTenants(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tn, _ := tenants.Get(1)
+	if len(tn.ConfigVersions) != 1 || tn.ConfigVersions[0].UserID != tn.OwnerID {
+		t.Fatalf("una cuenta vieja arranca con su versión 1: %+v", tn.ConfigVersions)
+	}
+	tn.Config.SLAHours["alta"] = 9
+	tn.AddVersion(time.Now(), 1, []string{"cambio"}, 1)
+	if err := tenants.Save(tn); err != nil {
+		t.Fatal(err)
+	}
+
+	again, err := repository.NewJSONTenants(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tn, _ = again.Get(1)
+	if len(tn.ConfigVersions) != 2 || tn.ConfigVersions[1].RestoredFrom != 1 || tn.ConfigVersions[1].Config.SLAHours["alta"] != 9 || tn.ConfigVersions[0].Config.SLAHours["alta"] != 4 {
+		t.Fatalf("el historial no sobrevivió al reinicio: %+v", tn.ConfigVersions)
+	}
+}

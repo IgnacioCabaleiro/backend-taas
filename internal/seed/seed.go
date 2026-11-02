@@ -200,8 +200,11 @@ func Tenants() []*domain.Tenant {
 		// La demo pausa el SLA mientras espera al solicitante (las plantillas no traen estados de pausa).
 		// Se agrega después de armar los incidentes para no cambiar los de siempre.
 		st := t.Config.States
+		first := t.Config.Clone()
+		t.EnsureFirstVersion(now.AddDate(0, 0, -30), 1)
 		t.Config.States = append(append(append([]string{}, st[:len(st)-1]...), waiting), final)
 		t.Config.PauseStates = []string{waiting}
+		t.AddVersion(now.AddDate(0, 0, -21), 1, domain.ConfigChanges(first, t.Config), 0)
 		lifecycle(t, life, now, byProblem, i == 0)
 		out = append(out, t)
 	}
