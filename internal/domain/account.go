@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 )
 
@@ -87,9 +88,16 @@ func (t *Tenant) Clone() *Tenant {
 func (t *Tenant) Normalize() {
 	c := &t.Config
 	if c.ResponseHours == nil {
-		c.ResponseHours = map[string]int{}
-		for k, v := range DefaultResponseHours {
-			c.ResponseHours[k] = v
+		// Las de resolución de la propia cuenta, como en las plantillas: así no pueden superarlas (ver Config.Validate).
+		if c.ResponseHours = maps.Clone(c.SLAHours); c.ResponseHours == nil {
+			c.ResponseHours = map[string]int{}
+		}
+	}
+	// Antes se podía guardar una primera respuesta mayor que la resolución: se baja a la resolución, para que la cuenta
+	// pueda volver a guardar su Configuración.
+	for _, p := range Priorities {
+		if c.ResponseHours[p] > c.SLAHours[p] {
+			c.ResponseHours[p] = c.SLAHours[p]
 		}
 	}
 	if c.PauseStates == nil {

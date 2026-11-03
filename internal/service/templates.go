@@ -4,7 +4,8 @@ import "taas-backend/internal/domain"
 
 // Plantillas por rubro: el punto de partida de cada cuenta nueva, editable después desde Configuración.
 // Las horas de primera respuesta son las mismas que las del SLA de resolución. Ninguna plantilla trae
-// estados de pausa: cada cuenta los configura si los necesita.
+// estados de pausa: cada cuenta los suma en el onboarding (WaitsRequester, que agrega WaitingRequester o lo reusa
+// si la plantilla ya lo trae) o los configura después.
 
 var templateOrder = []string{"it", "salud", "logistica", "otro"}
 
@@ -55,7 +56,7 @@ var templates = map[string]Template{
 		Services:      []string{"Atención al cliente", "Sistemas", "Administración"},
 		States:        []string{"Nuevo", "En curso", "Resuelto"},
 		SLAHours:      map[string]int{"alta": 4, "media": 8, "baja": 24},
-		ResponseHours: domain.DefaultResponseHours,
+		ResponseHours: map[string]int{"alta": 4, "media": 8, "baja": 24},
 		PauseStates:   []string{},
 		AutoCloseDays: domain.DefaultAutoCloseDays,
 		Fields: []domain.Field{

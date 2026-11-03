@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -42,10 +43,6 @@ const DefaultAutoCloseDays = 2
 
 var Priorities = []string{"alta", "media", "baja"}
 
-// DefaultResponseHours: las horas de primera respuesta de la plantilla "otro" (service/templates.go la usa).
-// También son las que reciben las cuentas guardadas antes de que existiera la primera respuesta (ver Tenant.Normalize).
-var DefaultResponseHours = map[string]int{"alta": 4, "media": 8, "baja": 24}
-
 // Setup: lo que el titular responde en el onboarding. No elige "módulos": cuenta cómo trabaja
 // y de ahí sale la configuración inicial, que después puede ajustar desde Configuración.
 type Setup struct {
@@ -56,6 +53,39 @@ type Setup struct {
 	SLA      bool     `json:"sla"`      // ¿hay plazos que cumplir? => vencimientos por prioridad
 	Problems bool     `json:"problems"` // ¿se repiten los mismos incidentes? => gestión de problemas
 	Fields   bool     `json:"fields"`   // ¿hace falta pedir datos propios en cada ticket?
+	// ¿A veces hay que esperar datos o una confirmación de quien reportó? => estado "Esperando al solicitante",
+	// que pausa el SLA de resolución. Solo con SLA (sin SLA se ignora); también sin equipo.
+	WaitsRequester bool `json:"waitsRequester"`
+	// Opcionales: si no vienen, quedan los de la plantilla. Si vienen en null o 0, los rechaza Config.Validate.
+	ResponseHours Opt[map[string]int] `json:"responseHours,omitzero"` // horas de primera respuesta; solo con SLA
+	AutoCloseDays Opt[int]            `json:"autoCloseDays,omitzero"` // días sin actividad para el cierre automático
+}
+
+// Opt: un campo opcional que distingue "no vino" (Set en false) de "vino", aunque sea null: un puntero no alcanza,
+// porque encoding/json deja en nil tanto el campo ausente como el null. Un null queda con Set y el valor cero.
+type Opt[T any] struct {
+	Set   bool
+	Value T
+}
+
+// UnmarshalJSON solo se llama si el campo vino; encoding/json la llama también con null.
+func (o *Opt[T]) UnmarshalJSON(b []byte) error {
+	var v T
+	if string(b) != "null" {
+		if err := json.Unmarshal(b, &v); err != nil {
+			return err
+		}
+	}
+	*o = Opt[T]{true, v}
+	return nil
+}
+
+// MarshalJSON es la vuelta: el valor tal cual (con omitzero, el que no vino no se escribe).
+func (o Opt[T]) MarshalJSON() ([]byte, error) {
+	if !o.Set {
+		return []byte("null"), nil
+	}
+	return json.Marshal(o.Value)
 }
 
 func Has(list []string, s string) bool {
@@ -95,6 +125,18 @@ func clean(list []string, what string) ([]string, error) {
 	return out, nil
 }
 
+// byPriority devuelve un mapa nuevo (nunca nil) solo con las claves que son prioridades: las demás se descartan.
+// No toca el original, que puede estar compartido.
+func byPriority(m map[string]int) map[string]int {
+	out := map[string]int{}
+	for _, p := range Priorities {
+		if v, ok := m[p]; ok {
+			out[p] = v
+		}
+	}
+	return out
+}
+
 // Validate normaliza la configuración y verifica que con ella se pueda operar.
 func (c *Config) Validate() error {
 	var err error
@@ -110,12 +152,19 @@ func (c *Config) Validate() error {
 	if len(c.States) < 2 {
 		return errors.New("hacen falta al menos dos estados: uno inicial y uno de resolución")
 	}
+	c.SLAHours, c.ResponseHours = byPriority(c.SLAHours), byPriority(c.ResponseHours)
 	for _, p := range Priorities {
 		if c.SLAHours[p] < 1 {
 			return fmt.Errorf("el SLA de prioridad %s tiene que ser de al menos 1 hora", p)
 		}
 		if c.ResponseHours[p] < 1 {
 			return fmt.Errorf("la primera respuesta de prioridad %s tiene que ser de al menos 1 hora", p)
+		}
+		// Primero se responde y después se resuelve (ITIL 4): igual está permitido. Vale aunque el SLA esté apagado,
+		// como los otros chequeos de horas.
+		if c.ResponseHours[p] > c.SLAHours[p] {
+			return fmt.Errorf("la primera respuesta de prioridad %s (%d h) no puede superar a la resolución (%d h)",
+				p, c.ResponseHours[p], c.SLAHours[p])
 		}
 	}
 	if c.AutoCloseDays < 1 {
