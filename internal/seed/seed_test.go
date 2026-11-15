@@ -206,3 +206,14 @@ func checkLifecycle(t *testing.T, tn *domain.Tenant) (reopened int) {
 	}
 	return reopened
 }
+
+// Los incidentes de demo traen impacto y urgencia, y su prioridad es la que da la matriz.
+func TestSeedPriorityMatrix(t *testing.T) {
+	for _, tn := range Tenants() {
+		for _, inc := range tn.Incidents {
+			if p, ok := domain.PriorityFor(inc.Impact, inc.Urgency); !ok || p != inc.Priority {
+				t.Fatalf("%s #%d: prioridad %s con impacto %q y urgencia %q", tn.Name, inc.ID, inc.Priority, inc.Impact, inc.Urgency)
+			}
+		}
+	}
+}

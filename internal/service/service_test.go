@@ -1271,3 +1271,33 @@ func TestAttachmentByReporterHoldsAutoClose(t *testing.T) {
 		t.Fatal("el incidente resuelto sigue pudiendo cerrarse solo")
 	}
 }
+
+// Matriz de prioridad: con impacto y urgencia la prioridad se calcula (y manda sobre la que venga), y fija el SLA.
+// Sin ninguno de los dos se usa la prioridad elegida, como antes.
+func TestPriorityMatrix(t *testing.T) {
+	sv, tn := newAccount(t)
+	in := vpn("x")
+	in.Impact, in.Urgency, in.Priority = "alta", "baja", "baja"
+	inc, err := sv.Incidents.Create(tid, guest, in)
+	must(t, err)
+	if inc.Priority != "media" || inc.Impact != "alta" || inc.Urgency != "baja" {
+		t.Fatalf("prioridad %s (impacto %s, urgencia %s), quería media", inc.Priority, inc.Impact, inc.Urgency)
+	}
+	if h := inc.DueAt.Sub(inc.CreatedAt).Hours(); h != float64(tn.Config.SLAHours["media"]) {
+		t.Fatalf("el SLA tiene que ser el de la prioridad calculada: %v h", h)
+	}
+
+	for _, c := range [][2]string{{"alta", ""}, {"", "media"}, {"altisima", "alta"}} {
+		in := vpn("x")
+		in.Impact, in.Urgency = c[0], c[1]
+		if _, err := sv.Incidents.Create(tid, agent, in); err == nil {
+			t.Errorf("impacto %q y urgencia %q: tendría que rechazarse", c[0], c[1])
+		}
+	}
+
+	legacy, err := sv.Incidents.Create(tid, agent, vpn("sin matriz"))
+	must(t, err)
+	if legacy.Priority != "alta" || legacy.Impact != "" || legacy.Urgency != "" {
+		t.Fatalf("sin impacto ni urgencia se usa la prioridad elegida: %+v", legacy)
+	}
+}

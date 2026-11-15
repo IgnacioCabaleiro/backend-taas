@@ -78,6 +78,21 @@ Cada paso queda en el `history` del incidente:
 | `relacionado` | en un cerrado, al registrar un incidente que lo continúa (`Se registró #m relacionado`) |
 | `adjunto` | al adjuntar o quitar un archivo (`Adjuntó informe.pdf` / `Quitó el adjunto informe.pdf`): lo ven todos |
 
+## Prioridad: impacto × urgencia
+
+Como propone ITIL 4, la prioridad no se elige: sale del **impacto** (a cuántos afecta) y de la **urgencia** (cuánto puede
+esperar), que pide el formulario de alta. Los dos usan los mismos niveles que la prioridad (`domain.PriorityFor`):
+
+| Impacto \ Urgencia | alta | media | baja |
+|---|---|---|---|
+| **alta** | alta | alta | media |
+| **media** | alta | media | baja |
+| **baja** | media | baja | baja |
+
+La prioridad calculada es la que fija los vencimientos del SLA. El incidente guarda `impact` y `urgency`; los registrados
+antes de la matriz, o por la API solo con `priority`, los tienen en `""`. Mandar uno solo de los dos, o un nivel que no
+existe, es un 400. Los incidentes de demo traen impacto y urgencia coherentes con su prioridad.
+
 ## Adjuntos
 
 Un incidente puede tener hasta 10 archivos (`attachments` en el incidente: `id`, `name`, `size`, `contentType`, `uploadedBy`, `uploadedAt`).
@@ -121,7 +136,7 @@ Salvo alta, login y plantillas, todo requiere `Authorization: Bearer <token>` y 
 | `PUT /api/config` | módulos, servicios, estados, campos, SLA (resolución y primera respuesta), estados de pausa, días para el cierre automático y regla de recurrencia | `config` |
 | `POST /api/users` · `PUT/DELETE /api/users/{id}` | hasta 5 usuarios además del titular. Un cambio de rol que le saca `resolver` a quien tiene incidentes abiertos asignados, o `problemas` a quien es responsable de un problema activo (no resuelto), se rechaza: hay que reasignarlos primero | `config` |
 | `POST /api/roles` · `PUT/DELETE /api/roles/{id}` | roles con permisos a medida. Un rol no pierde `resolver` mientras alguno de sus usuarios tenga incidentes abiertos asignados, ni `problemas` mientras alguno sea responsable de un problema activo | `config` |
-| `POST /api/incidents` | registra un incidente. `assigneeId` tiene que ser alguien con `resolver` (0 = sin asignar). `relatedIncidentId` lo relaciona con uno cerrado (quien solo reporta, con uno suyo) | `crear` |
+| `POST /api/incidents` | registra un incidente. Con `impact` y `urgency` (`alta`, `media`, `baja`) la prioridad se calcula con la matriz y `priority` se ignora; sin ninguno de los dos se usa `priority` (ver [Prioridad](#prioridad-impacto--urgencia)). `assigneeId` tiene que ser alguien con `resolver` (0 = sin asignar). `relatedIncidentId` lo relaciona con uno cerrado (quien solo reporta, con uno suyo) | `crear` |
 | `POST /api/incidents/{id}` | cambia estado, asignado o problema. El asignado tiene que tener `resolver` (`assigneeId: 0` lo deja sin asignar) y `problemId: 0` lo desvincula. Para resolverlo (pasar al último estado) exige `resolutionCode` y `resolutionNote`. Un cerrado no se modifica | `resolver` |
 | `POST /api/incidents/{id}/comments` | `{text, public}`: respuesta (`public: true`) o nota interna. Quien lo reportó solo publica respuestas en los suyos | `resolver`, o quien lo reportó |
 | `POST /api/incidents/{id}/reopen` | `{reason}`: reabre un incidente resuelto (no uno cerrado) | `resolver` |

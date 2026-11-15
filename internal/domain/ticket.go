@@ -17,20 +17,24 @@ import (
 //
 // Cada paso queda en el historial del incidente.
 type Incident struct {
-	ID          int               `json:"id"`
-	Title       string            `json:"title"`
-	Description string            `json:"description"`
-	Service     string            `json:"service"`
-	Priority    string            `json:"priority"`
-	Status      string            `json:"status"` // uno de Config.States
-	Fields      map[string]string `json:"fields"`
-	CreatedBy   int               `json:"createdBy"`
-	AssigneeID  int               `json:"assigneeId"` // 0 = sin asignar
-	ProblemID   int               `json:"problemId"`  // 0 = sin problema
-	CreatedAt   time.Time         `json:"createdAt"`
-	DueAt       *time.Time        `json:"dueAt,omitempty"` // vencimiento del SLA, si el módulo está activo
-	ResolvedAt  *time.Time        `json:"resolvedAt,omitempty"`
-	History     []Event           `json:"history"`
+	ID          int    `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Service     string `json:"service"`
+	Priority    string `json:"priority"`
+	// Impacto y urgencia de los que sale la prioridad (ver PriorityFor). "" en los registrados con la prioridad
+	// elegida a mano (los anteriores a la matriz, o por la API sin impacto ni urgencia).
+	Impact     string            `json:"impact"`
+	Urgency    string            `json:"urgency"`
+	Status     string            `json:"status"` // uno de Config.States
+	Fields     map[string]string `json:"fields"`
+	CreatedBy  int               `json:"createdBy"`
+	AssigneeID int               `json:"assigneeId"` // 0 = sin asignar
+	ProblemID  int               `json:"problemId"`  // 0 = sin problema
+	CreatedAt  time.Time         `json:"createdAt"`
+	DueAt      *time.Time        `json:"dueAt,omitempty"` // vencimiento del SLA, si el módulo está activo
+	ResolvedAt *time.Time        `json:"resolvedAt,omitempty"`
+	History    []Event           `json:"history"`
 	// Vencimiento de la primera respuesta (si el módulo SLA está activo; se fija al registrar y no se mueve) y cuándo llegó.
 	ResponseDueAt   *time.Time `json:"responseDueAt,omitempty"`
 	FirstResponseAt *time.Time `json:"firstResponseAt,omitempty"`
@@ -138,13 +142,17 @@ func (inc *Incident) SyncPause(pauseStates []string, at time.Time) {
 }
 
 type NewIncident struct {
-	Title       string            `json:"title"`
-	Description string            `json:"description"`
-	Service     string            `json:"service"`
-	Priority    string            `json:"priority"`
-	Fields      map[string]string `json:"fields"`
-	AssigneeID  int               `json:"assigneeId"`
-	ProblemID   int               `json:"problemId"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Service     string `json:"service"`
+	// Con impacto y urgencia, la prioridad se calcula con la matriz y Priority se ignora.
+	// Sin ninguno de los dos, se usa Priority tal cual (compatibilidad con los clientes anteriores).
+	Impact     string            `json:"impact"`
+	Urgency    string            `json:"urgency"`
+	Priority   string            `json:"priority"`
+	Fields     map[string]string `json:"fields"`
+	AssigneeID int               `json:"assigneeId"`
+	ProblemID  int               `json:"problemId"`
 	// RelatedIncidentID: incidente cerrado del que este es continuación (0 = ninguno).
 	RelatedIncidentID int `json:"relatedIncidentId"`
 }

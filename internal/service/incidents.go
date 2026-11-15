@@ -27,7 +27,14 @@ func (s *Incidents) Create(tenantID, by int, in domain.NewIncident) (inc *domain
 		if !domain.Has(t.Config.Services, in.Service) {
 			return errors.New("elegí un servicio del catálogo")
 		}
-		if !domain.Has(domain.Priorities, in.Priority) {
+		switch {
+		case in.Impact != "" || in.Urgency != "":
+			p, ok := domain.PriorityFor(in.Impact, in.Urgency)
+			if !ok {
+				return errors.New("elegí el impacto y la urgencia")
+			}
+			in.Priority = p
+		case !domain.Has(domain.Priorities, in.Priority):
 			return errors.New("prioridad inválida")
 		}
 		if err := assignable(t, in.AssigneeID); err != nil {
@@ -47,7 +54,7 @@ func (s *Incidents) Create(tenantID, by int, in domain.NewIncident) (inc *domain
 		}
 		now := time.Now()
 		inc = &domain.Incident{ID: len(t.Incidents) + 1, Title: in.Title, Description: in.Description, Service: in.Service,
-			Priority: in.Priority, Status: t.Config.States[0], Fields: fields, CreatedBy: by, CreatedAt: now,
+			Priority: in.Priority, Impact: in.Impact, Urgency: in.Urgency, Status: t.Config.States[0], Fields: fields, CreatedBy: by, CreatedAt: now,
 			History: []domain.Event{}, Attachments: []domain.Attachment{}, RelatedIncidentID: in.RelatedIncidentID}
 		if related != nil {
 			inc.Log(now, by, domain.EvCreated, "Incidente registrado (relacionado con #%d)", related.ID)
