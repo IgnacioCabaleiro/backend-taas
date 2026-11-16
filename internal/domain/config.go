@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -42,6 +43,31 @@ type Config struct {
 const DefaultAutoCloseDays = 2
 
 var Priorities = []string{"alta", "media", "baja"}
+
+// Matriz de prioridad (ITIL 4): la prioridad no se elige, sale del impacto (a cuántos afecta) y de la urgencia
+// (cuánto puede esperar). Los dos usan los mismos niveles que la prioridad. Sumando los niveles
+// (alta = 0, media = 1, baja = 2): 0 o 1 es alta, 2 es media, 3 o 4 es baja.
+//
+//	impacto \ urgencia   alta    media   baja
+//	alta                 alta    alta    media
+//	media                alta    media   baja
+//	baja                 media   baja    baja
+//
+// PriorityFor devuelve false si alguno de los dos no es un nivel válido.
+func PriorityFor(impact, urgency string) (string, bool) {
+	i, u := slices.Index(Priorities, impact), slices.Index(Priorities, urgency)
+	if i < 0 || u < 0 {
+		return "", false
+	}
+	switch s := i + u; {
+	case s <= 1:
+		return "alta", true
+	case s == 2:
+		return "media", true
+	default:
+		return "baja", true
+	}
+}
 
 // Setup: lo que el titular responde en el onboarding. No elige "módulos": cuenta cómo trabaja
 // y de ahí sale la configuración inicial, que después puede ajustar desde Configuración.

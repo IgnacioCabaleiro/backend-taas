@@ -126,11 +126,12 @@ func Tenants() []*domain.Tenant {
 				service = t.Config.Services[rnd.Intn(len(t.Config.Services))]
 			}
 			prio := domain.Priorities[[]int{0, 1, 1, 2}[rnd.Intn(4)]]
+			impact, urgency := classify(prio, len(t.Incidents))
 			created := now.Add(-time.Duration(age * float64(time.Hour)))
 			sla := time.Duration(t.Config.SLAHours[prio]) * time.Hour
 			due := created.Add(sla)
 			inc := &domain.Incident{ID: len(t.Incidents) + 1, Title: sd.titles[service][rnd.Intn(len(sd.titles[service]))],
-				Service: service, Priority: prio, Status: t.Config.States[rnd.Intn(len(t.Config.States)-1)],
+				Service: service, Priority: prio, Impact: impact, Urgency: urgency, Status: t.Config.States[rnd.Intn(len(t.Config.States)-1)],
 				Fields: map[string]string{}, CreatedBy: 1 + rnd.Intn(len(t.Users)), AssigneeID: rnd.Intn(4), CreatedAt: created, DueAt: &due}
 			for _, f := range t.Config.Fields {
 				switch f.Type {
@@ -473,4 +474,19 @@ func (s story) reopen(at time.Time, by int, reason string) {
 	s.inc.ReopenCount++
 	s.inc.AutoCloseHold = false
 	s.inc.Log(at, by, domain.EvReopened, "De %s a %s: %s", from, s.inc.Status, reason)
+}
+
+// classify elige, sin tocar el generador aleatorio (así los datos de demo no cambian), un impacto y una urgencia
+// que den la prioridad prio con la matriz. n va rotando entre las combinaciones posibles.
+func classify(prio string, n int) (string, string) {
+	var pairs [][2]string
+	for _, i := range domain.Priorities {
+		for _, u := range domain.Priorities {
+			if p, _ := domain.PriorityFor(i, u); p == prio {
+				pairs = append(pairs, [2]string{i, u})
+			}
+		}
+	}
+	pair := pairs[n%len(pairs)]
+	return pair[0], pair[1]
 }
