@@ -76,6 +76,40 @@ func (h *Handler) setActionDone(r *http.Request, tenantID, userID int) error {
 	return h.svc.Problems.SetActionDone(tenantID, userID, pathID(r), index, in.Done)
 }
 
+func (h *Handler) startSwarm(r *http.Request, tenantID, userID int) error {
+	return h.svc.Problems.StartSwarm(tenantID, userID, pathID(r))
+}
+
+func (h *Handler) joinSwarm(r *http.Request, tenantID, userID int) error {
+	return h.svc.Problems.JoinSwarm(tenantID, userID, pathID(r))
+}
+
+func (h *Handler) closeSwarm(r *http.Request, tenantID, userID int) error {
+	return h.svc.Problems.CloseSwarm(tenantID, userID, pathID(r))
+}
+
+func (h *Handler) swarmNote(r *http.Request, tenantID, userID int) error {
+	var in struct {
+		Kind string `json:"kind"`
+		Text string `json:"text"`
+	}
+	if err := decode(r, &in); err != nil {
+		return err
+	}
+	return h.svc.Problems.SwarmNote(tenantID, userID, pathID(r), in.Kind, in.Text)
+}
+
+func (h *Handler) simulateSLA(w http.ResponseWriter, r *http.Request) {
+	var in domain.SimInput
+	if err := decode(r, &in); err != nil {
+		fail(w, err)
+		return
+	}
+	h.respondRead(w, r, func(tenantID, userID int) (any, error) {
+		return h.svc.Metrics.SimulateSLA(tenantID, userID, in)
+	})
+}
+
 func (h *Handler) deflect(r *http.Request, tenantID, userID int) error {
 	return h.svc.Problems.Deflect(tenantID, userID, pathID(r))
 }

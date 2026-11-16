@@ -30,3 +30,20 @@ func (s *Metrics) SLA(tenantID, by, days int) (domain.SLAMetrics, error) {
 	}
 	return t.ComputeSLA(days, time.Now()), nil
 }
+
+// SimulateSLA recalcula el cumplimiento del período con otros plazos. Mismos permisos que las métricas de SLA.
+func (s *Metrics) SimulateSLA(tenantID, by int, in domain.SimInput) (domain.SimResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, err := s.tenants.Get(tenantID)
+	if err != nil {
+		return domain.SimResult{}, err
+	}
+	if !t.Can(by, domain.PermPanel) {
+		return domain.SimResult{}, domain.ErrForbidden
+	}
+	if !t.Config.Modules.SLA {
+		return domain.SimResult{}, errors.New("el módulo de SLA no está activado en esta cuenta")
+	}
+	return t.SimulateSLA(in, time.Now())
+}

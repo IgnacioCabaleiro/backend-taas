@@ -1748,3 +1748,35 @@ func TestRequestCatalog(t *testing.T) {
 		t.Fatalf("sin catálogo queda una lista vacía: %#v", tn.Config.RequestTypes)
 	}
 }
+
+// Lo de las fases 2 y 3 (similitud, radar entre servicios, workarounds) es de la gestión de incidentes:
+// las solicitudes no se mezclan.
+func TestRequestsOutsideIncidentTools(t *testing.T) {
+	sv, tn := newAccount(t)
+	a, err := sv.Incidents.Create(tid, guest, alta("Alta de usuario para Juana en Rosario"))
+	must(t, err)
+	b, err := sv.Incidents.Create(tid, guest, alta("Alta de usuario para Juana en Rosario"))
+	must(t, err)
+	inc := vpn("Alta de usuario para Juana en Rosario no anda la VPN")
+	i, err := sv.Incidents.Create(tid, agent, inc)
+	must(t, err)
+
+	for _, m := range tn.SimilarIncidents(i, 10) {
+		if m.ID == a.ID || m.ID == b.ID {
+			t.Fatalf("un incidente no tiene solicitudes como parecidas: %+v", m)
+		}
+	}
+	if ms := tn.SimilarIncidents(a, 10); len(ms) == 0 || ms[0].ID != b.ID {
+		t.Fatalf("dos solicitudes iguales sí son parecidas (posible duplicado): %+v", ms)
+	}
+	for _, g := range tn.CrossServiceRecurrence(time.Now()) {
+		for _, id := range g.IncidentIDs {
+			if id == a.ID || id == b.ID {
+				t.Fatalf("el radar entre servicios no agrupa solicitudes: %+v", g)
+			}
+		}
+	}
+	if sv.Incidents.ApplyWorkaround(tid, agent, a.ID, 1) == nil {
+		t.Fatal("una solicitud no se resuelve con un workaround")
+	}
+}

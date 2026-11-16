@@ -464,6 +464,10 @@ func (s *Incidents) ApplyWorkaround(tenantID, by, id, problemID int) error {
 		if inc.ResolvedAt != nil {
 			return errors.New("el incidente ya está resuelto")
 		}
+		// Un workaround es para una falla: una solicitud no se vincula a un problema ni se resuelve "con workaround".
+		if inc.IsRequest() {
+			return errors.New("una solicitud no se resuelve con un workaround: no es una falla")
+		}
 		if err := linkable(t, problemID); err != nil {
 			return err
 		}

@@ -49,6 +49,17 @@ func (h *Handler) addUser(r *http.Request, tenantID, userID int) error {
 	return h.svc.Accounts.AddUser(tenantID, userID, in.Name, in.Email, in.Password, in.RoleID)
 }
 
+func (h *Handler) invite(r *http.Request, tenantID, userID int) error {
+	var in struct {
+		Name, Email string
+		RoleID      int `json:"roleId"`
+	}
+	if err := decode(r, &in); err != nil {
+		return err
+	}
+	return h.svc.Accounts.Invite(tenantID, userID, in.Name, in.Email, in.RoleID)
+}
+
 func (h *Handler) setUserRole(r *http.Request, tenantID, userID int) error {
 	var in struct {
 		RoleID int `json:"roleId"`

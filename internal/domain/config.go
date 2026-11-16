@@ -108,6 +108,8 @@ type Setup struct {
 	SLA      bool     `json:"sla"`      // ¿hay plazos que cumplir? => vencimientos por prioridad
 	Problems bool     `json:"problems"` // ¿se repiten los mismos incidentes? => gestión de problemas
 	Fields   bool     `json:"fields"`   // ¿hace falta pedir datos propios en cada ticket?
+	// ¿Arrancar con los errores conocidos típicos del rubro? Solo si también hay gestión de problemas.
+	KnownErrors bool `json:"knownErrors"`
 	// ¿A veces hay que esperar datos o una confirmación de quien reportó? => estado "Esperando al solicitante",
 	// que pausa el SLA de resolución. Solo con SLA (sin SLA se ignora); también sin equipo.
 	WaitsRequester bool `json:"waitsRequester"`

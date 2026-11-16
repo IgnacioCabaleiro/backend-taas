@@ -15,9 +15,18 @@ type Setup struct{ base }
 
 // Template: el punto de partida de un rubro (ver templates.go).
 type Template struct {
-	Key      string        `json:"key"`
-	Industry string        `json:"industry"`
-	Config   domain.Config `json:"config"`
+	Key         string        `json:"key"`
+	Industry    string        `json:"industry"`
+	Config      domain.Config `json:"config"`
+	KnownErrors []KnownError  `json:"knownErrors"`
+}
+
+// KnownError: un error conocido típico de un rubro, para que la ticketera arranque sabiendo cosas.
+type KnownError struct {
+	Service    string `json:"service"`
+	Title      string `json:"title"`
+	RootCause  string `json:"rootCause"`
+	Workaround string `json:"workaround"`
 }
 
 // Full: las respuestas del onboarding en "sí" (cuentas de demo, vista previa), salvo WaitsRequester: las plantillas
@@ -98,7 +107,7 @@ func (s *Setup) Templates() []Template {
 	out := []Template{}
 	for _, k := range templateOrder {
 		c, _ := templates[k].build(Full)
-		out = append(out, Template{k, templates[k].Industry, c})
+		out = append(out, Template{k, templates[k].Industry, c, templates[k].KnownErrors})
 	}
 	return out
 }
@@ -120,8 +129,38 @@ func (s *Setup) Onboard(tenantID, by int, in domain.Setup) error {
 			}
 		}
 		t.Industry, t.Config = industry, c
+		preload(t, templates[in.Template].KnownErrors, in.KnownErrors && in.Problems, by)
 		return nil
 	})
+}
+
+// preload deja los errores conocidos típicos del rubro (solo los de servicios que siguen en el catálogo).
+// El onboarding se puede repetir: los precargados de una pasada anterior se reemplazan. Durante el onboarding
+// no hay otros problemas, así que los IDs siguen siendo correlativos.
+func preload(t *domain.Tenant, known []KnownError, on bool, by int) {
+	kept := []*domain.Problem{}
+	for _, p := range t.Problems {
+		if !p.Preloaded {
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) != len(t.Problems) && len(kept) > 0 {
+		return // ya hay problemas propios: no se toca nada
+	}
+	t.Problems = kept
+	if !on {
+		return
+	}
+	now := time.Now()
+	for _, k := range known {
+		if !domain.Has(t.Config.Services, k.Service) {
+			continue
+		}
+		p := &domain.Problem{ID: len(t.Problems) + 1, Title: k.Title, Service: k.Service, Status: domain.ErrorConocido, OwnerID: by,
+			RootCause: k.RootCause, Workaround: k.Workaround, CreatedAt: now, Preloaded: true, WorkaroundUses: []domain.WorkaroundUse{}}
+		p.Log(by, "", "Precargado como error conocido típico del rubro")
+		t.Problems = append(t.Problems, p)
+	}
 }
 
 func (s *Setup) Finish(tenantID, by int) error {

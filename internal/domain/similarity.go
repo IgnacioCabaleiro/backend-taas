@@ -159,7 +159,8 @@ func (t *Tenant) MatchProblems(text, service string, onlyShared bool, limit int)
 func (t *Tenant) SimilarIncidents(inc *Incident, limit int) []Match {
 	docs, bonus := map[int]string{}, map[int]float64{}
 	for _, o := range t.Incidents {
-		if o.ID == inc.ID || o.Closed() {
+		// Solo entre tickets del mismo tipo: una solicitud no es duplicado de un incidente, ni comparten problema.
+		if o.ID == inc.ID || o.Closed() || o.Kind != inc.Kind {
 			continue
 		}
 		docs[o.ID] = o.Title + " " + o.Description

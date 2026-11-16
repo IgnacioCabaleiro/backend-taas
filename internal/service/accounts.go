@@ -1,6 +1,8 @@
 package service
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -42,6 +44,32 @@ func (a *Accounts) AddUser(tenantID, by int, name, email, password string, roleI
 			return err
 		}
 		t.Users = append(t.Users, domain.User{ID: t.NextUserID, Name: name, Email: email, RoleID: roleID, Hash: hash})
+		t.NextUserID++
+		return nil
+	})
+}
+
+// Invite suma a alguien al equipo sin inventarle una contraseña: queda una invitación pendiente y el titular
+// le pasa el link. Al aceptarla, la persona elige su contraseña (ver Auth.AcceptInvite).
+func (a *Accounts) Invite(tenantID, by int, name, email string, roleID int) error {
+	name, email, err := credentials(name, email, strings.Repeat("x", minPassword))
+	if err != nil {
+		return err
+	}
+	b := make([]byte, 24)
+	rand.Read(b)
+	token := hex.EncodeToString(b)
+	return a.update(tenantID, by, domain.PermConfig, func(t *domain.Tenant) error {
+		if len(t.Users)-1 >= domain.MaxUsers {
+			return fmt.Errorf("tu plan incluye hasta %d usuarios además del titular", domain.MaxUsers)
+		}
+		if t.Role(roleID) == nil {
+			return errors.New("elegí un rol")
+		}
+		if err := unique(a.tenants, email); err != nil {
+			return err
+		}
+		t.Users = append(t.Users, domain.User{ID: t.NextUserID, Name: name, Email: email, RoleID: roleID, Invite: token})
 		t.NextUserID++
 		return nil
 	})

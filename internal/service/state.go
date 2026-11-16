@@ -28,6 +28,8 @@ type View struct {
 	Requests    []*domain.Incident  `json:"requests"`
 	Problems    []*domain.Problem   `json:"problems"`
 	Suggestions []domain.Suggestion `json:"suggestions"`
+	// El mismo síntoma en servicios distintos: solo para quien gestiona problemas.
+	CrossSuggestions []domain.CrossSuggestion `json:"crossSuggestions"`
 	// Historial de la configuración: solo para quien puede configurar.
 	ConfigVersions []domain.ConfigVersion `json:"configVersions"`
 }
@@ -56,6 +58,9 @@ func (s *State) View(tenantID, me int) (View, error) {
 	}
 	for _, u := range t.Users {
 		u.Hash = ""
+		if !t.Can(me, domain.PermConfig) {
+			u.Invite = "" // el link de la invitación es del titular
+		}
 		v.Users = append(v.Users, u)
 	}
 	// Quien solo reporta ve sus propios incidentes. Para ver todos hace falta resolver tickets, ver el panel
@@ -78,8 +83,10 @@ func (s *State) View(tenantID, me int) (View, error) {
 	if t.Config.Modules.Problems && all {
 		v.Problems = t.Problems
 	}
+	v.CrossSuggestions = []domain.CrossSuggestion{}
 	if t.Can(me, domain.PermProblems) {
 		v.Suggestions = Suggestions(t)
+		v.CrossSuggestions = t.CrossServiceRecurrence(time.Now())
 	}
 	return v, nil
 }

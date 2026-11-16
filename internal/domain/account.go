@@ -53,6 +53,9 @@ type User struct {
 	Email  string `json:"email"`
 	RoleID int    `json:"roleId"`
 	Hash   string `json:"hash,omitempty"` // nunca sale por la API (ver service.State)
+	// Invite: token de la invitación pendiente. Quien la recibe elige su contraseña y entra; hasta entonces
+	// no puede ingresar. Solo lo ve quien configura la cuenta (para copiar el link).
+	Invite string `json:"invite,omitempty"`
 }
 
 // Tenant: la cuenta de un cliente. Todo lo que hay adentro es solo suyo.

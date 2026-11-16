@@ -161,11 +161,14 @@ Salvo alta, login y plantillas, todo requiere `Authorization: Bearer <token>` y 
 | `POST /api/login` · `POST /api/logout` | abre y cierra sesión | — |
 | `GET /api/templates` | plantillas de rubro para el onboarding | — |
 | `GET /api/state` | estado de la cuenta | sesión |
+| `POST /api/metrics/sla/simulate` | `{days, slaHours, responseHours}`: qué hubiera pasado en el período con otros plazos. Usa la configuración vigente al crear cada incidente y respeta lo que estuvo en pausa. Devuelve el real y el simulado por prioridad, y qué incidentes cambian de lado | `panel`, y módulo SLA activo |
 | `GET /api/metrics/sla?days=30` | métricas de SLA (`days`: 7, 30 o 90). Responde con los indicadores, no con el estado de la cuenta | `panel`, y módulo SLA activo |
 | `POST /api/onboarding` | aplica las respuestas del onboarding: rubro, servicios y cómo trabaja el cliente (equipo, plazos, recurrencia, datos propios, si espera a quien reportó). Opcionales: `responseHours` y `waitsRequester` (los dos solo con `sla`) y `autoCloseDays` (ver abajo). Repetible hasta terminar: cada vez se arma de nuevo desde la plantilla | `config` |
 | `POST /api/onboarding/finish` | da por terminado el onboarding | `config` |
 | `PUT /api/config` | módulos, servicios, estados, campos, SLA (resolución y primera respuesta, que no puede superarla), estados de pausa, días para el cierre automático, regla de recurrencia y catálogo de solicitudes | `config` |
 | `POST /api/config/versions/{id}/restore` | vuelve a una versión anterior de la configuración; crea una versión nueva, el historial no se borra | `config` |
+| `POST /api/invitations` | `{name, email, roleId}`: suma a una persona sin contraseña y devuelve el estado con su `invite` (link de invitación; solo lo ve quien configura). Cuenta para el límite de 5 | `config` |
+| `GET /api/invitations/{token}` · `POST /api/invitations/{token}/accept` | ver a qué cuenta lo invitaron y aceptar con `{password}` (devuelve el token de sesión) | — |
 | `POST /api/users` · `PUT/DELETE /api/users/{id}` | hasta 5 usuarios además del titular. Un cambio de rol que le saca `resolver` a quien tiene incidentes abiertos asignados, o `problemas` a quien es responsable de un problema activo (no resuelto), se rechaza: hay que reasignarlos primero | `config` |
 | `POST /api/roles` · `PUT/DELETE /api/roles/{id}` | roles con permisos a medida. Un rol no pierde `resolver` mientras alguno de sus usuarios tenga incidentes abiertos asignados, ni `problemas` mientras alguno sea responsable de un problema activo | `config` |
 | `POST /api/incidents` | registra un ticket. Con `kind: "solicitud"` y `requestType` (un ítem del catálogo) es una solicitud de servicio (ver [Solicitudes](#solicitudes-de-servicio)); sin `kind`, un incidente. Con `impact` y `urgency` (`alta`, `media`, `baja`) la prioridad se calcula con la matriz y `priority` se ignora; sin ninguno de los dos se usa `priority` (ver [Prioridad](#prioridad-impacto--urgencia)). `assigneeId` tiene que ser alguien con `resolver` (0 = sin asignar). `relatedIncidentId` lo relaciona con uno cerrado (quien solo reporta, con uno suyo) | `crear` |
@@ -183,6 +186,7 @@ Salvo alta, login y plantillas, todo requiere `Authorization: Bearer <token>` y 
 | `PUT /api/problems/{id}/workaround` | `{text, shared}`: edita el workaround de un error conocido y decide si lo ven quienes reportan | `problemas` |
 | `POST /api/problems/{id}/deflect` | registra que a alguien le alcanzó un workaround compartido y no abrió el ticket | `crear` |
 | `PUT /api/problems/{id}/review` · `/review/actions/{n}` | revisión post-problema de un problema resuelto (qué pasó, qué aprendimos, acciones con responsable y fecha) y marcar acciones como hechas | `problemas` |
+| `POST /api/problems/{id}/swarm` · `/swarm/join` · `/swarm/notes` · `/swarm/close` | swarming: el equipo investiga el problema a la vez. Las notas son `{kind, text}` con `kind` `pista`, `descartado` o `hallazgo` | `problemas` o `resolver` |
 | `POST /api/problems` · `/{id}/advance` · `/{id}/owner` · `/{id}/comments` | gestión de problemas. Crear un problema con `incidentIds` vincula esos incidentes, también los cerrados. El responsable (`ownerId`) tiene que tener `problemas` | `problemas` |
 
 El onboarding arma la configuración desde la plantilla del rubro (`GET /api/templates`, que el front usa para precargar) y
