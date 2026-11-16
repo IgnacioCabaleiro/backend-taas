@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"taas-backend/internal/domain"
@@ -205,6 +206,7 @@ func Tenants() []*domain.Tenant {
 		service.AddWaitingRequester(&t.Config)
 		t.AddVersion(now.AddDate(0, 0, -21), 1, domain.ConfigChanges(first, t.Config), 0)
 		lifecycle(t, life, now, byProblem, i == 0)
+		workarounds(t)
 		out = append(out, t)
 	}
 	return out
@@ -477,6 +479,37 @@ func (s story) reopen(at time.Time, by int, reason string) {
 	s.inc.ReopenCount++
 	s.inc.AutoCloseHold = false
 	s.inc.Log(at, by, domain.EvReopened, "De %s a %s: %s", from, s.inc.Status, reason)
+}
+
+// workarounds deriva del historial de cada incidente los usos del workaround de su problema, como los registra
+// la API: un uso por cada resolución con el código "workaround", fallido si después se reabrió. Además, en la demo
+// los errores conocidos comparten su workaround con quienes reportan, y ya evitaron algunos tickets.
+func workarounds(t *domain.Tenant) {
+	label := " · " + domain.ResolutionLabels["workaround"] + ": "
+	for _, p := range t.Problems {
+		p.WorkaroundUses = []domain.WorkaroundUse{}
+		if p.Workaround == "" {
+			continue
+		}
+		for _, inc := range t.Incidents {
+			if inc.ProblemID != p.ID {
+				continue
+			}
+			for _, e := range inc.History {
+				switch {
+				case e.Kind == domain.EvResolved && strings.Contains(e.Text, label):
+					p.WorkaroundUses = append(p.WorkaroundUses, domain.WorkaroundUse{IncidentID: inc.ID, At: e.At, UserID: e.UserID})
+				case e.Kind == domain.EvReopened && len(p.WorkaroundUses) > 0:
+					if u := &p.WorkaroundUses[len(p.WorkaroundUses)-1]; u.IncidentID == inc.ID {
+						u.Failed = true
+					}
+				}
+			}
+		}
+		if p.Status == domain.ErrorConocido {
+			p.WorkaroundShared, p.Deflections = true, 3
+		}
+	}
 }
 
 // classify elige, sin tocar el generador aleatorio (así los datos de demo no cambian), un impacto y una urgencia

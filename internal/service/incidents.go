@@ -244,6 +244,9 @@ func (s *Incidents) Reopen(tenantID, by, id int, reason string) error {
 			return errors.New("el incidente no está resuelto")
 		}
 		now, from := time.Now(), inc.Status
+		if inc.ResolutionCode == "workaround" {
+			workaroundFailed(t, inc, by)
+		}
 		setStatus(t, inc, t.Config.States[0], now)
 		inc.ResolvedAt, inc.ResolutionCode, inc.ResolutionNote = nil, "", ""
 		inc.ReopenCount++
@@ -358,12 +361,63 @@ func setStatus(t *domain.Tenant, inc *domain.Incident, status string, now time.T
 func resolve(t *domain.Tenant, inc *domain.Incident, from, code, note string, by int, now time.Time) {
 	inc.ResolvedAt, inc.ResolutionCode, inc.ResolutionNote = &now, code, note
 	inc.Log(now, by, domain.EvResolved, "De %s a %s · %s: %s", from, inc.Status, domain.ResolutionLabels[code], note)
-	if p, err := t.Problem(inc.ProblemID); err == nil && p.Workaround != "" && p.Status != domain.Resuelto {
+	if p, err := t.Problem(inc.ProblemID); err == nil && code == "workaround" && p.Workaround != "" && p.Status != domain.Resuelto {
+		p.WorkaroundUses = append(p.WorkaroundUses, domain.WorkaroundUse{IncidentID: inc.ID, At: now, UserID: by})
 		p.Log(by, "", "#%d resuelto con workaround", inc.ID)
 	}
 	if domain.Has(domain.ClosingCodes, code) {
 		closeIncident(t, inc, by, now)
 	}
+}
+
+// workaroundFailed marca como fallido el último uso del workaround en inc: se reabrió, así que no alcanzó.
+func workaroundFailed(t *domain.Tenant, inc *domain.Incident, by int) {
+	p, err := t.Problem(inc.ProblemID)
+	if err != nil {
+		return
+	}
+	for i := len(p.WorkaroundUses) - 1; i >= 0; i-- {
+		if u := &p.WorkaroundUses[i]; u.IncidentID == inc.ID && !u.Failed {
+			u.Failed = true
+			p.Log(by, "", "El workaround no alcanzó en #%d: se reabrió", inc.ID)
+			return
+		}
+	}
+}
+
+// ApplyWorkaround resuelve un incidente abierto con el workaround de un error conocido, en un solo paso:
+// lo vincula al problema si hace falta, le responde a quien lo reportó con el workaround (cuenta como primera
+// respuesta) y lo resuelve con el código "workaround". Si después se reabre, el uso queda como fallido.
+func (s *Incidents) ApplyWorkaround(tenantID, by, id, problemID int) error {
+	return s.update(tenantID, by, domain.PermResolve, func(t *domain.Tenant) error {
+		inc, err := t.Incident(id)
+		if err != nil {
+			return err
+		}
+		if inc.Closed() {
+			return domain.ErrClosed
+		}
+		if inc.ResolvedAt != nil {
+			return errors.New("el incidente ya está resuelto")
+		}
+		if err := linkable(t, problemID); err != nil {
+			return err
+		}
+		p, err := t.Problem(problemID)
+		if err != nil {
+			return err
+		}
+		if p.Status != domain.ErrorConocido || strings.TrimSpace(p.Workaround) == "" {
+			return errors.New("ese problema no tiene un workaround publicado")
+		}
+		now, from := time.Now(), inc.Status
+		link(t, inc, p.ID, by, now)
+		inc.Respond(now)
+		inc.Log(now, by, domain.EvReply, "Mientras resolvemos la causa de fondo, esto te permite seguir trabajando: %s", p.Workaround)
+		setStatus(t, inc, t.ResolvedState(), now)
+		resolve(t, inc, from, "workaround", p.Workaround, by, now)
+		return nil
+	})
 }
 
 // closeIncident cierra un incidente resuelto a mano (el automático es domain.Tenant.AutoClose).

@@ -60,6 +60,13 @@ func New(svc *service.Services) http.Handler {
 	mux.HandleFunc("POST /api/problems/{id}/owner", h.authed(h.setProblemOwner))
 	mux.HandleFunc("POST /api/problems/{id}/comments", h.authed(h.commentProblem))
 
+	// Errores conocidos y workarounds.
+	mux.HandleFunc("GET /api/knowledge/match", h.matchKnowledge)
+	mux.HandleFunc("GET /api/incidents/{id}/related", h.relatedToIncident)
+	mux.HandleFunc("POST /api/incidents/{id}/workaround", h.authed(h.applyWorkaround))
+	mux.HandleFunc("PUT /api/problems/{id}/workaround", h.authed(h.updateWorkaround))
+	mux.HandleFunc("POST /api/problems/{id}/deflect", h.authed(h.deflect))
+
 	return h.middleware(mux)
 }
 

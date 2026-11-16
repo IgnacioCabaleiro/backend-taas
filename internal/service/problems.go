@@ -113,6 +113,56 @@ func (s *Problems) Advance(tenantID, by, id int, in domain.Advance) error {
 	})
 }
 
+// UpdateWorkaround cambia el workaround de un error conocido y si se comparte con quienes reportan.
+// El workaround evoluciona mientras se busca la solución definitiva; los usos anteriores se conservan.
+func (s *Problems) UpdateWorkaround(tenantID, by, id int, text string, shared bool) error {
+	return s.update(tenantID, by, func(t *domain.Tenant) error {
+		p, err := t.Problem(id)
+		if err != nil {
+			return err
+		}
+		if p.Status != domain.ErrorConocido {
+			return errors.New("el workaround se edita mientras el problema es un error conocido")
+		}
+		text = strings.TrimSpace(text)
+		if shared && text == "" {
+			return errors.New("para compartir un workaround primero hay que escribirlo")
+		}
+		switch {
+		case text != p.Workaround && text == "":
+			p.Log(by, "", "Workaround eliminado")
+		case text != p.Workaround:
+			p.Log(by, "", "Workaround actualizado: %s", text)
+		}
+		if shared != p.WorkaroundShared {
+			if shared {
+				p.Log(by, "", "Workaround compartido con quienes reportan")
+			} else {
+				p.Log(by, "", "Workaround visible solo para el equipo")
+			}
+		}
+		p.Workaround, p.WorkaroundShared = text, shared
+		return nil
+	})
+}
+
+// Deflect registra que a alguien le alcanzó un workaround compartido y no abrió el ticket.
+// Lo puede hacer cualquiera que pueda crear tickets: es la otra cara de registrar uno.
+func (s *Problems) Deflect(tenantID, by, id int) error {
+	return s.base.update(tenantID, by, domain.PermCreate, func(t *domain.Tenant) error {
+		p, err := t.Problem(id)
+		if err != nil {
+			return err
+		}
+		if !t.Config.Modules.Problems || p.Status != domain.ErrorConocido || !p.WorkaroundShared {
+			return fmt.Errorf("problema %d: %w", id, domain.ErrNotFound)
+		}
+		p.Deflections++
+		p.Log(by, "", "A %s le alcanzó el workaround y no abrió un ticket", t.User(by).Name)
+		return nil
+	})
+}
+
 func (s *Problems) SetOwner(tenantID, by, id, ownerID int) error {
 	return s.update(tenantID, by, func(t *domain.Tenant) error {
 		p, err := t.Problem(id)

@@ -220,3 +220,28 @@ func TestSeedPriorityMatrix(t *testing.T) {
 		}
 	}
 }
+
+// La demo muestra workarounds con historia: usados, alguno fallido y compartidos.
+func TestDemoWorkarounds(t *testing.T) {
+	uses := 0
+	for _, tn := range Tenants() {
+		for _, p := range tn.Problems {
+			uses += len(p.WorkaroundUses)
+			if p.Status == domain.ErrorConocido && (!p.WorkaroundShared || p.Deflections == 0) {
+				t.Errorf("%s P-%d: el error conocido de la demo comparte su workaround", tn.Name, p.ID)
+			}
+			for _, u := range p.WorkaroundUses {
+				inc, _ := tn.Incident(u.IncidentID)
+				if inc.ProblemID != p.ID {
+					t.Errorf("%s P-%d: uso de un incidente ajeno #%d", tn.Name, p.ID, u.IncidentID)
+				}
+				if !u.Failed && inc.ResolutionCode != "workaround" && inc.ResolvedAt != nil && inc.ReopenCount == 0 {
+					t.Errorf("%s #%d: uso efectivo sin resolución con workaround", tn.Name, inc.ID)
+				}
+			}
+		}
+	}
+	if uses == 0 {
+		t.Error("la demo tiene que mostrar usos del workaround")
+	}
+}

@@ -111,6 +111,11 @@ func (t *Tenant) Normalize() {
 	if t.Onboarded {
 		t.EnsureFirstVersion(time.Now(), t.OwnerID) // cuentas guardadas antes de que existiera el historial
 	}
+	for _, p := range t.Problems {
+		if p.WorkaroundUses == nil {
+			p.WorkaroundUses = []WorkaroundUse{}
+		}
+	}
 	for _, inc := range t.Incidents {
 		if inc.History == nil {
 			inc.History = []Event{} // los incidentes viejos no tienen historial: no se inventa

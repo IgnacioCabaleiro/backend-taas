@@ -194,6 +194,36 @@ type Problem struct {
 	Solution    string    `json:"solution"`
 	CreatedAt   time.Time `json:"createdAt"`
 	History     []Event   `json:"history"`
+	// WorkaroundShared: quienes reportan ven el workaround mientras escriben un incidente parecido,
+	// y pueden resolverlo solos sin abrir un ticket (ver Deflections).
+	WorkaroundShared bool            `json:"workaroundShared"`
+	WorkaroundUses   []WorkaroundUse `json:"workaroundUses"`
+	// Deflections: veces que a alguien le alcanzó el workaround compartido y no abrió el ticket.
+	Deflections int `json:"deflections"`
+}
+
+// WorkaroundUse: una vez que un incidente se resolvió con el workaround del problema.
+// Failed: el incidente se reabrió después, así que el workaround no alcanzó.
+type WorkaroundUse struct {
+	IncidentID int       `json:"incidentId"`
+	At         time.Time `json:"at"`
+	UserID     int       `json:"userId"`
+	Failed     bool      `json:"failed"`
+}
+
+// WorkaroundEffectiveness: qué parte de los usos del workaround no terminó en reapertura (0 a 100).
+// ok es false si todavía no se usó.
+func (p *Problem) WorkaroundEffectiveness() (pct int, ok bool) {
+	if len(p.WorkaroundUses) == 0 {
+		return 0, false
+	}
+	good := 0
+	for _, u := range p.WorkaroundUses {
+		if !u.Failed {
+			good++
+		}
+	}
+	return good * 100 / len(p.WorkaroundUses), true
 }
 
 // Log agrega un evento al historial del problema.
