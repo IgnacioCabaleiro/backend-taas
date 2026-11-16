@@ -126,11 +126,12 @@ func Tenants() []*domain.Tenant {
 				service = t.Config.Services[rnd.Intn(len(t.Config.Services))]
 			}
 			prio := domain.Priorities[[]int{0, 1, 1, 2}[rnd.Intn(4)]]
+			impact, urgency := classify(prio, len(t.Incidents))
 			created := now.Add(-time.Duration(age * float64(time.Hour)))
 			sla := time.Duration(t.Config.SLAHours[prio]) * time.Hour
 			due := created.Add(sla)
 			inc := &domain.Incident{ID: len(t.Incidents) + 1, Title: sd.titles[service][rnd.Intn(len(sd.titles[service]))],
-				Service: service, Priority: prio, Status: t.Config.States[rnd.Intn(len(t.Config.States)-1)],
+				Service: service, Priority: prio, Impact: impact, Urgency: urgency, Status: t.Config.States[rnd.Intn(len(t.Config.States)-1)],
 				Fields: map[string]string{}, CreatedBy: 1 + rnd.Intn(len(t.Users)), AssigneeID: rnd.Intn(4), CreatedAt: created, DueAt: &due}
 			for _, f := range t.Config.Fields {
 				switch f.Type {
@@ -197,13 +198,11 @@ func Tenants() []*domain.Tenant {
 			}
 			t.Problems = append(t.Problems, p)
 		}
-		// La demo pausa el SLA mientras espera al solicitante (las plantillas no traen estados de pausa).
+		// La demo pausa el SLA mientras espera al solicitante, como el onboarding con "waitsRequester".
 		// Se agrega después de armar los incidentes para no cambiar los de siempre.
-		st := t.Config.States
 		first := t.Config.Clone()
 		t.EnsureFirstVersion(now.AddDate(0, 0, -30), 1)
-		t.Config.States = append(append(append([]string{}, st[:len(st)-1]...), waiting), final)
-		t.Config.PauseStates = []string{waiting}
+		service.AddWaitingRequester(&t.Config)
 		t.AddVersion(now.AddDate(0, 0, -21), 1, domain.ConfigChanges(first, t.Config), 0)
 		lifecycle(t, life, now, byProblem, i == 0)
 		out = append(out, t)
@@ -236,9 +235,6 @@ var (
 	}
 )
 
-// waiting: el estado de pausa de las cuentas de demo, justo antes del de resolución.
-const waiting = "Esperando al solicitante"
-
 // lifecycle arma el historial de cada incidente de demo hasta la etapa que ya tiene (registro, diagnóstico,
 // respuestas, notas, resolución y cierre), con los mismos efectos que la API: primera respuesta, pausas del SLA
 // (corren el vencimiento de resolución) y cierre automático tras AutoCloseDays sin actividad. byProblem: incidentes que resolvió su problema, con el estado en el
@@ -252,7 +248,7 @@ func lifecycle(t *domain.Tenant, rnd *rand.Rand, now time.Time, byProblem map[in
 	paused, discarded := 0, 0 // discarded: resueltos como duplicado o cancelado, que cierran al resolver (uno o dos)
 	for _, inc := range t.Incidents {
 		if paused < 2 && inc.ResolvedAt == nil && inc.ProblemID == 0 {
-			inc.Status = waiting
+			inc.Status = service.WaitingRequester
 			paused++
 		}
 	}
@@ -261,12 +257,12 @@ func lifecycle(t *domain.Tenant, rnd *rand.Rand, now time.Time, byProblem map[in
 	var onTime *domain.Incident
 	for _, inc := range t.Incidents {
 		mid := inc.CreatedAt.Add(now.Sub(inc.CreatedAt) / 2)
-		if onTime == nil && inc.ResolvedAt == nil && inc.ProblemID == 0 && inc.Status != waiting && inc.DueAt.After(mid) {
+		if onTime == nil && inc.ResolvedAt == nil && inc.ProblemID == 0 && inc.Status != service.WaitingRequester && inc.DueAt.After(mid) {
 			onTime = inc
 		}
 	}
 	if onTime != nil {
-		onTime.Status = waiting
+		onTime.Status = service.WaitingRequester
 	}
 	var reopened, held *domain.Incident
 	for _, inc := range t.Incidents {
@@ -345,7 +341,7 @@ func lifecycle(t *domain.Tenant, rnd *rand.Rand, now time.Time, byProblem map[in
 		}
 		// La primera respuesta es la primera respuesta pública de quien atiende (cambiar el estado no cuenta).
 		// onTime hace el sorteo como si no estuviera en pausa, para no cambiar el resto de la demo.
-		if (target == waiting && inc != onTime) || rnd.Float64() < 0.8 || inc == onTime {
+		if (target == service.WaitingRequester && inc != onTime) || rnd.Float64() < 0.8 || inc == onTime {
 			text := replies[rnd.Intn(len(replies))]
 			add(f(0.1+0.5*rnd.Float64()), func(at time.Time) { s.reply(at, agent, text) })
 		}
@@ -481,4 +477,19 @@ func (s story) reopen(at time.Time, by int, reason string) {
 	s.inc.ReopenCount++
 	s.inc.AutoCloseHold = false
 	s.inc.Log(at, by, domain.EvReopened, "De %s a %s: %s", from, s.inc.Status, reason)
+}
+
+// classify elige, sin tocar el generador aleatorio (así los datos de demo no cambian), un impacto y una urgencia
+// que den la prioridad prio con la matriz. n va rotando entre las combinaciones posibles.
+func classify(prio string, n int) (string, string) {
+	var pairs [][2]string
+	for _, i := range domain.Priorities {
+		for _, u := range domain.Priorities {
+			if p, _ := domain.PriorityFor(i, u); p == prio {
+				pairs = append(pairs, [2]string{i, u})
+			}
+		}
+	}
+	pair := pairs[n%len(pairs)]
+	return pair[0], pair[1]
 }

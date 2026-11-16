@@ -64,8 +64,8 @@ func checkLifecycle(t *testing.T, tn *domain.Tenant) (reopened int) {
 	if err := c.Validate(); err != nil {
 		t.Errorf("%s: configuración inválida: %v", tn.Name, err)
 	}
-	if fmt.Sprint(c.PauseStates) != "["+waiting+"]" || c.States[len(c.States)-2] != waiting {
-		t.Errorf("%s: %q tiene que ser el único estado de pausa, justo antes del de resolución: %v %v", tn.Name, waiting, c.States, c.PauseStates)
+	if fmt.Sprint(c.PauseStates) != "["+service.WaitingRequester+"]" || c.States[len(c.States)-2] != service.WaitingRequester {
+		t.Errorf("%s: %q tiene que ser el único estado de pausa, justo antes del de resolución: %v %v", tn.Name, service.WaitingRequester, c.States, c.PauseStates)
 	}
 	autoClose := time.Duration(c.AutoCloseDays) * 24 * time.Hour
 	var responded, replies, notes, paused, onTime, resolved, held, byHand, auto, discarded, related int
@@ -208,4 +208,15 @@ func checkLifecycle(t *testing.T, tn *domain.Tenant) (reopened int) {
 			tn.Name, paused, resolved, held, byHand, auto, discarded, related)
 	}
 	return reopened
+}
+
+// Los incidentes de demo traen impacto y urgencia, y su prioridad es la que da la matriz.
+func TestSeedPriorityMatrix(t *testing.T) {
+	for _, tn := range Tenants() {
+		for _, inc := range tn.Incidents {
+			if p, ok := domain.PriorityFor(inc.Impact, inc.Urgency); !ok || p != inc.Priority {
+				t.Fatalf("%s #%d: prioridad %s con impacto %q y urgencia %q", tn.Name, inc.ID, inc.Priority, inc.Impact, inc.Urgency)
+			}
+		}
+	}
 }
