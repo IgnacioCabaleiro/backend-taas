@@ -26,6 +26,7 @@ type seedTenant struct {
 	titles         map[string][]string // por servicio
 	problems       []seedProblem
 	recent         string // servicio con incidentes recientes sin investigar: dispara la sugerencia
+	unhappy        string // servicio que cumple el SLA pero deja a la gente disconforme
 }
 
 var seeds = []seedTenant{
@@ -48,7 +49,8 @@ var seeds = []seedTenant{
 				"El registro SPF del dominio no incluía al nuevo proveedor de envío.",
 				"Enviar los mails urgentes desde la cuenta de respaldo.", "Se actualizó el registro SPF y se configuró DKIM."},
 		},
-		recent: "Impresoras",
+		recent:  "Impresoras",
+		unhappy: "VPN",
 	},
 	{
 		name: "Clínica del Sol", template: "salud", domain: "clinicadelsol.demo",
@@ -69,7 +71,8 @@ var seeds = []seedTenant{
 				"El certificado SSL del portal venció: no tenía renovación automática ni alerta previa.",
 				"Dar los turnos por teléfono mientras dure el corte.", "Renovación automática del certificado y alerta 30 días antes del vencimiento."},
 		},
-		recent: "Laboratorio",
+		recent:  "Laboratorio",
+		unhappy: "Historia clínica electrónica",
 	},
 }
 
@@ -207,6 +210,7 @@ func Tenants() []*domain.Tenant {
 		t.AddVersion(now.AddDate(0, 0, -21), 1, domain.ConfigChanges(first, t.Config), 0)
 		lifecycle(t, life, now, byProblem, i == 0)
 		workarounds(t)
+		ratings(t, sd.unhappy)
 		out = append(out, t)
 	}
 	return out
@@ -479,6 +483,38 @@ func (s story) reopen(at time.Time, by int, reason string) {
 	s.inc.ReopenCount++
 	s.inc.AutoCloseHold = false
 	s.inc.Log(at, by, domain.EvReopened, "De %s a %s: %s", from, s.inc.Status, reason)
+}
+
+// ratings valora dos de cada tres incidentes resueltos, como los valoraría quien los reportó. En el servicio
+// unhappy la gente queda disconforme aunque se cumpla el SLA: es la "sandía" que tiene que detectar el panel.
+// Usa su propio generador para no cambiar el resto de los datos de demo.
+func ratings(t *domain.Tenant, unhappy string) {
+	rnd := rand.New(rand.NewSource(23))
+	comments := map[int][]string{
+		1: {"Me lo cerraron sin que funcione.", "Tardaron una eternidad."},
+		2: {"Se resolvió, pero me tuvieron que llamar dos veces.", "No me avisaron nada en todo el día."},
+		3: {"Bien, aunque podría haber sido más rápido."},
+		4: {"Gracias, quedó funcionando.", ""},
+		5: {"Excelente, muy rápido.", "Impecable.", ""},
+	}
+	for _, inc := range t.Incidents {
+		if inc.ResolvedAt == nil || domain.Has(domain.ClosingCodes, inc.ResolutionCode) || rnd.Float64() > 0.66 {
+			continue
+		}
+		r := []int{3, 4, 4, 5, 5, 5}[rnd.Intn(6)]
+		if inc.Service == unhappy {
+			r = []int{1, 2, 2, 3, 4}[rnd.Intn(5)]
+		}
+		if inc.ResolutionCode == "workaround" && r > 3 && rnd.Float64() < 0.3 {
+			r = 3 // un workaround deja funcionando, pero no del todo conforme
+		}
+		at := inc.ResolvedAt.Add(time.Duration(1+rnd.Intn(20)) * time.Hour)
+		if at.After(time.Now()) {
+			continue
+		}
+		c := comments[r]
+		inc.Rating, inc.RatingComment, inc.RatedAt = r, c[rnd.Intn(len(c))], &at
+	}
 }
 
 // workarounds deriva del historial de cada incidente los usos del workaround de su problema, como los registra

@@ -49,7 +49,15 @@ type Incident struct {
 	RelatedIncidentID int  `json:"relatedIncidentId"` // incidente cerrado del que es continuación; 0 = ninguno
 	// Archivos adjuntos (ver Attachment). Los ve cualquiera que vea el incidente.
 	Attachments []Attachment `json:"attachments"`
+	// Valoración de quien lo reportó, una vez resuelto: de 1 (muy mal) a 5 (excelente); 0 = sin valorar.
+	// No es un evento del historial: valorar no es actividad y no frena el cierre automático.
+	Rating        int        `json:"rating"`
+	RatingComment string     `json:"ratingComment"`
+	RatedAt       *time.Time `json:"ratedAt,omitempty"`
 }
+
+// Satisfied: la valoración cuenta como conforme (4 o 5), como en una encuesta CSAT.
+func (inc *Incident) Satisfied() bool { return inc.Rating >= 4 }
 
 // ErrClosed: un incidente cerrado es de solo lectura.
 var ErrClosed = errors.New("el incidente está cerrado: registrá un incidente relacionado")

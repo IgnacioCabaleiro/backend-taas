@@ -139,3 +139,28 @@ func TestRelated(t *testing.T) {
 		t.Fatalf("la impresora no tiene nada que ver con la VPN: %+v", r.Problems)
 	}
 }
+
+// Valora la atención quien reportó el incidente, una sola vez y recién cuando está resuelto.
+func TestRate(t *testing.T) {
+	sv, _ := newAccount(t)
+	inc, _ := sv.Incidents.Create(tid, guest, vpn("no anda la VPN"))
+	if sv.Incidents.Rate(tid, guest, inc.ID, 5, "") == nil {
+		t.Fatal("todavía no está resuelto")
+	}
+	resolved := "Resuelto"
+	must(t, sv.Incidents.Update(tid, agent, inc.ID, domain.IncidentPatch{Status: &resolved, ResolutionCode: "solucionado", ResolutionNote: "listo"}))
+	if sv.Incidents.Rate(tid, agent, inc.ID, 5, "") == nil {
+		t.Fatal("valora quien lo reportó, no quien lo atendió")
+	}
+	if sv.Incidents.Rate(tid, guest, inc.ID, 9, "") == nil {
+		t.Fatal("la valoración va de 1 a 5")
+	}
+	before := len(inc.History)
+	must(t, sv.Incidents.Rate(tid, guest, inc.ID, 2, "  tardaron mucho "))
+	if inc.Rating != 2 || inc.RatingComment != "tardaron mucho" || inc.RatedAt == nil || inc.Satisfied() || len(inc.History) != before {
+		t.Fatalf("valoración mal guardada (y no es un evento del historial): %+v", inc)
+	}
+	if sv.Incidents.Rate(tid, guest, inc.ID, 5, "") == nil {
+		t.Fatal("se valora una sola vez")
+	}
+}

@@ -50,6 +50,7 @@ func New(svc *service.Services) http.Handler {
 	mux.HandleFunc("POST /api/incidents", h.authed(h.createIncident))
 	mux.HandleFunc("POST /api/incidents/{id}", h.authed(h.updateIncident))
 	mux.HandleFunc("POST /api/incidents/{id}/comments", h.authed(h.commentIncident))
+	mux.HandleFunc("POST /api/incidents/{id}/rating", h.authed(h.rateIncident))
 	mux.HandleFunc("POST /api/incidents/{id}/reopen", h.authed(h.reopenIncident))
 	mux.HandleFunc("POST /api/incidents/{id}/close", h.authed(h.closeIncident))
 	mux.HandleFunc("POST /api/incidents/{id}/attachments", h.authed(h.addAttachment))

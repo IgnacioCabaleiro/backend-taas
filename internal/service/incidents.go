@@ -370,6 +370,32 @@ func resolve(t *domain.Tenant, inc *domain.Incident, from, code, note string, by
 	}
 }
 
+// Rate guarda la valoración de quien reportó el incidente, una vez resuelto (también si ya se cerró).
+// Se valora una sola vez: es la foto de cómo terminó la atención.
+func (s *Incidents) Rate(tenantID, by, id, rating int, comment string) error {
+	return s.modify(tenantID, func(t *domain.Tenant) error {
+		inc, err := t.Incident(id)
+		if err != nil {
+			return err
+		}
+		if inc.CreatedBy != by || !t.Can(by, domain.PermCreate) {
+			return domain.Denied("valora la atención quien reportó el incidente")
+		}
+		if inc.ResolvedAt == nil {
+			return errors.New("el incidente todavía no está resuelto")
+		}
+		if inc.Rating != 0 {
+			return errors.New("ya valoraste este incidente")
+		}
+		if rating < 1 || rating > 5 {
+			return errors.New("elegí una valoración de 1 a 5")
+		}
+		now := time.Now()
+		inc.Rating, inc.RatingComment, inc.RatedAt = rating, strings.TrimSpace(comment), &now
+		return nil
+	})
+}
+
 // workaroundFailed marca como fallido el último uso del workaround en inc: se reabrió, así que no alcanzó.
 func workaroundFailed(t *domain.Tenant, inc *domain.Incident, by int) {
 	p, err := t.Problem(inc.ProblemID)

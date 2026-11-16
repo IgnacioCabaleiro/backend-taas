@@ -245,3 +245,25 @@ func TestDemoWorkarounds(t *testing.T) {
 		t.Error("la demo tiene que mostrar usos del workaround")
 	}
 }
+
+// La demo tiene valoraciones, y en un servicio por cuenta la gente queda disconforme aunque se cumpla el SLA.
+func TestDemoRatings(t *testing.T) {
+	for _, tn := range Tenants() {
+		rated, unhappy := 0, 0
+		for _, inc := range tn.Incidents {
+			if inc.Rating == 0 {
+				continue
+			}
+			rated++
+			if inc.ResolvedAt == nil || inc.RatedAt.Before(*inc.ResolvedAt) || inc.Rating < 1 || inc.Rating > 5 {
+				t.Errorf("%s #%d: valoración inválida", tn.Name, inc.ID)
+			}
+			if !inc.Satisfied() {
+				unhappy++
+			}
+		}
+		if rated < 10 || unhappy == 0 {
+			t.Errorf("%s: la demo tiene que tener valoraciones, y alguna disconforme: %d / %d", tn.Name, rated, unhappy)
+		}
+	}
+}
