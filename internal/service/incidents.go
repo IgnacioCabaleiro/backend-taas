@@ -21,21 +21,38 @@ func (s *Incidents) Create(tenantID, by int, in domain.NewIncident) (inc *domain
 		if !t.Can(by, domain.PermResolve) {
 			in.AssigneeID, in.ProblemID = 0, 0
 		}
-		if in.Title = strings.TrimSpace(in.Title); in.Title == "" {
-			return errors.New("contá qué está pasando")
-		}
-		if !domain.Has(t.Config.Services, in.Service) {
-			return errors.New("elegí un servicio del catálogo")
-		}
-		switch {
-		case in.Impact != "" || in.Urgency != "":
-			p, ok := domain.PriorityFor(in.Impact, in.Urgency)
-			if !ok {
-				return errors.New("elegí el impacto y la urgencia")
+		var reqType *domain.RequestType
+		switch in.Kind {
+		case "", domain.KindIncident:
+			in.Kind, in.RequestType = domain.KindIncident, ""
+			if in.Title = strings.TrimSpace(in.Title); in.Title == "" {
+				return errors.New("contá qué está pasando")
 			}
-			in.Priority = p
-		case !domain.Has(domain.Priorities, in.Priority):
-			return errors.New("prioridad inválida")
+			if !domain.Has(t.Config.Services, in.Service) {
+				return errors.New("elegí un servicio del catálogo")
+			}
+			switch {
+			case in.Impact != "" || in.Urgency != "":
+				p, ok := domain.PriorityFor(in.Impact, in.Urgency)
+				if !ok {
+					return errors.New("elegí el impacto y la urgencia")
+				}
+				in.Priority = p
+			case !domain.Has(domain.Priorities, in.Priority):
+				return errors.New("prioridad inválida")
+			}
+		case domain.KindRequest:
+			// Una solicitud es un pedido estándar: sale del catálogo, que fija su plazo. No tiene servicio afectado,
+			// prioridad ni problema (no es una falla).
+			if reqType = t.Config.RequestType(in.RequestType); reqType == nil {
+				return errors.New("elegí una solicitud del catálogo")
+			}
+			if in.Title = strings.TrimSpace(in.Title); in.Title == "" {
+				in.Title = reqType.Name // el título es opcional: si no hay, alcanza con qué se pide
+			}
+			in.Service, in.Priority, in.Impact, in.Urgency, in.ProblemID = "", "", "", "", 0
+		default:
+			return errors.New("tipo de ticket inválido: incidente o solicitud")
 		}
 		if err := assignable(t, in.AssigneeID); err != nil {
 			return err
@@ -48,22 +65,34 @@ func (s *Incidents) Create(tenantID, by int, in domain.NewIncident) (inc *domain
 		if err := linkable(t, in.ProblemID); err != nil {
 			return err
 		}
-		related, err := relatable(t, in.RelatedIncidentID, by)
+		related, err := relatable(t, in.RelatedIncidentID, in.Kind, by)
 		if err != nil {
 			return err
 		}
 		now := time.Now()
-		inc = &domain.Incident{ID: len(t.Incidents) + 1, Title: in.Title, Description: in.Description, Service: in.Service,
-			Priority: in.Priority, Impact: in.Impact, Urgency: in.Urgency, Status: t.Config.States[0], Fields: fields, CreatedBy: by, CreatedAt: now,
+		inc = &domain.Incident{ID: len(t.Incidents) + 1, Kind: in.Kind, RequestType: in.RequestType, Title: in.Title,
+			Description: in.Description, Service: in.Service, Priority: in.Priority, Impact: in.Impact, Urgency: in.Urgency,
+			Status: t.Config.States[0], Fields: fields, CreatedBy: by, CreatedAt: now,
 			History: []domain.Event{}, Attachments: []domain.Attachment{}, RelatedIncidentID: in.RelatedIncidentID}
+		what := "Incidente registrado"
+		if reqType != nil {
+			what = "Solicitud registrada: " + reqType.Name
+		}
 		if related != nil {
-			inc.Log(now, by, domain.EvCreated, "Incidente registrado (relacionado con #%d)", related.ID)
+			inc.Log(now, by, domain.EvCreated, "%s (relacionado con #%d)", what, related.ID)
 			// La única escritura sobre un cerrado: queda constancia de su continuación.
 			related.Log(now, by, domain.EvRelated, "Se registró #%d relacionado", inc.ID)
 		} else {
-			inc.Log(now, by, domain.EvCreated, "Incidente registrado")
+			inc.Log(now, by, domain.EvCreated, "%s", what)
 		}
-		if t.Config.Modules.SLA {
+		switch {
+		case !t.Config.Modules.SLA:
+		case reqType != nil:
+			// El plazo de una solicitud es el de su ítem del catálogo. No tiene vencimiento de primera respuesta:
+			// lo que se mide es que se cumpla a tiempo.
+			due := now.Add(time.Duration(reqType.Hours) * time.Hour)
+			inc.DueAt = &due
+		default:
 			due := now.Add(time.Duration(t.Config.SLAHours[in.Priority]) * time.Hour)
 			resp := now.Add(time.Duration(t.Config.ResponseHours[in.Priority]) * time.Hour)
 			inc.DueAt, inc.ResponseDueAt = &due, &resp
@@ -76,15 +105,18 @@ func (s *Incidents) Create(tenantID, by int, in domain.NewIncident) (inc *domain
 	return inc, err
 }
 
-// relatable verifica que se pueda relacionar el incidente nuevo con id (0 = ninguno): tiene que existir y estar
-// cerrado, y quien solo reporta solo puede relacionarlo con uno suyo.
-func relatable(t *domain.Tenant, id, by int) (*domain.Incident, error) {
+// relatable verifica que se pueda relacionar el ticket nuevo (de tipo kind) con id (0 = ninguno): tiene que existir,
+// ser del mismo tipo y estar cerrado, y quien solo reporta solo puede relacionarlo con uno suyo.
+func relatable(t *domain.Tenant, id int, kind string, by int) (*domain.Incident, error) {
 	if id == 0 {
 		return nil, nil
 	}
 	r, err := t.Incident(id)
 	if err != nil {
 		return nil, fmt.Errorf("el incidente relacionado #%d no existe", id)
+	}
+	if r.Kind != kind {
+		return nil, errors.New("solo se puede relacionar con un ticket del mismo tipo: un incidente con un incidente, una solicitud con una solicitud")
 	}
 	if !t.Can(by, domain.PermResolve) && r.CreatedBy != by {
 		return nil, domain.Denied("solo podés relacionarlo con un incidente tuyo")
@@ -133,6 +165,9 @@ func (s *Incidents) Update(tenantID, by, id int, in domain.IncidentPatch) error 
 				return err
 			}
 		}
+		if in.ProblemID != nil && *in.ProblemID != 0 && inc.IsRequest() {
+			return errors.New("una solicitud no se vincula a un problema: no es una falla")
+		}
 		if in.ProblemID != nil && *in.ProblemID != inc.ProblemID {
 			if err := linkable(t, *in.ProblemID); err != nil {
 				return err
@@ -148,7 +183,7 @@ func (s *Incidents) Update(tenantID, by, id int, in domain.IncidentPatch) error 
 		}
 		resolving := moving && *in.Status == t.ResolvedState()
 		if resolving {
-			if err := resolution(in.ResolutionCode, in.ResolutionNote); err != nil {
+			if err := resolution(inc.Kind, in.ResolutionCode, in.ResolutionNote); err != nil {
 				return err
 			}
 		}
@@ -172,12 +207,15 @@ func (s *Incidents) Update(tenantID, by, id int, in domain.IncidentPatch) error 
 	})
 }
 
-// resolution valida el código y la nota con los que se resuelve un incidente.
-func resolution(code, note string) error {
-	if !domain.Has(domain.ResolutionCodes, code) {
+// resolution valida el código y la nota con los que se resuelve un ticket de tipo kind: cada tipo tiene los suyos.
+func resolution(kind, code, note string) error {
+	if !domain.Has(domain.ResolutionCodesFor(kind), code) {
 		return errors.New("elegí un código de resolución válido")
 	}
 	if strings.TrimSpace(note) == "" {
+		if kind == domain.KindRequest {
+			return errors.New("contá cómo se resolvió la solicitud")
+		}
 		return errors.New("contá cómo se resolvió el incidente")
 	}
 	return nil

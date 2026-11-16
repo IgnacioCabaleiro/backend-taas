@@ -98,6 +98,32 @@ La prioridad calculada es la que fija los vencimientos del SLA. El incidente gua
 antes de la matriz, o por la API solo con `priority`, los tienen en `""`. Mandar uno solo de los dos, o un nivel que no
 existe, es un 400. Los incidentes de demo traen impacto y urgencia coherentes con su prioridad.
 
+## Solicitudes de servicio
+
+ITIL 4 separa el **incidente** (algo dejó de funcionar) de la **solicitud de servicio** (un pedido estándar: un alta,
+un acceso, un equipo). Las dos son el mismo ticket con otro `kind` (`incidente` o `solicitud`): comparten el ciclo de
+vida (registro, diagnóstico, resolución, cierre), las respuestas, las notas, los adjuntos, la reapertura y el cierre
+automático. Lo que cambia en una solicitud:
+
+| | Incidente | Solicitud |
+|---|---|---|
+| Qué se elige | servicio afectado, impacto y urgencia | un ítem del catálogo (`requestType`) |
+| SLA (si el módulo está activo) | por prioridad: primera respuesta y resolución | las horas del ítem del catálogo; sin vencimiento de primera respuesta |
+| Problemas | se vincula; cuenta para las sugerencias de recurrencia | nunca: no es una falla |
+| Códigos de resolución | `solucionado`, `workaround`, `duplicado`, `sin_reproducir`, `cancelado` | `cumplida` (Cumplida), `rechazada` (Rechazada), `duplicado`, `cancelado` |
+| Métricas de SLA | sí | no (son las de la gestión de incidentes) |
+
+- **Catálogo** (`config.requestTypes`: `[{name, hours}]`): lo que se puede pedir y en cuántas horas se cumple. Cada
+  plantilla de rubro trae el suyo y se edita en Configuración. Vacío, la cuenta no recibe solicitudes. Un ítem
+  renombrado arrastra sus solicitudes (como los servicios y los estados); uno quitado ya no se puede pedir, pero las
+  solicitudes que ya lo tenían conservan el nombre.
+- Una solicitud sin título toma el nombre del ítem. Los campos propios de la cuenta se piden igual que en un incidente.
+- Un ticket solo se relaciona (`relatedIncidentId`) con un cerrado **del mismo tipo**.
+- `GET /api/state` devuelve las solicitudes aparte, en `requests` (con el mismo recorte para quien solo reporta); `incidents`
+  trae solo incidentes. Las acciones sobre un ticket usan las mismas rutas `/api/incidents/{id}/…` para los dos tipos.
+- Los datos guardados antes de las solicitudes se cargan con `kind: "incidente"` y la cuenta sin catálogo. Las cuentas
+  de demo traen solicitudes en todas las etapas.
+
 ## Adjuntos
 
 Un incidente puede tener hasta 10 archivos (`attachments` en el incidente: `id`, `name`, `size`, `contentType`, `uploadedBy`, `uploadedAt`).
@@ -138,10 +164,10 @@ Salvo alta, login y plantillas, todo requiere `Authorization: Bearer <token>` y 
 | `GET /api/metrics/sla?days=30` | métricas de SLA (`days`: 7, 30 o 90). Responde con los indicadores, no con el estado de la cuenta | `panel`, y módulo SLA activo |
 | `POST /api/onboarding` | aplica las respuestas del onboarding: rubro, servicios y cómo trabaja el cliente (equipo, plazos, recurrencia, datos propios, si espera a quien reportó). Opcionales: `responseHours` y `waitsRequester` (los dos solo con `sla`) y `autoCloseDays` (ver abajo). Repetible hasta terminar: cada vez se arma de nuevo desde la plantilla | `config` |
 | `POST /api/onboarding/finish` | da por terminado el onboarding | `config` |
-| `PUT /api/config` | módulos, servicios, estados, campos, SLA (resolución y primera respuesta, que no puede superarla), estados de pausa, días para el cierre automático y regla de recurrencia | `config` |
+| `PUT /api/config` | módulos, servicios, estados, campos, SLA (resolución y primera respuesta, que no puede superarla), estados de pausa, días para el cierre automático, regla de recurrencia y catálogo de solicitudes | `config` |
 | `POST /api/users` · `PUT/DELETE /api/users/{id}` | hasta 5 usuarios además del titular. Un cambio de rol que le saca `resolver` a quien tiene incidentes abiertos asignados, o `problemas` a quien es responsable de un problema activo (no resuelto), se rechaza: hay que reasignarlos primero | `config` |
 | `POST /api/roles` · `PUT/DELETE /api/roles/{id}` | roles con permisos a medida. Un rol no pierde `resolver` mientras alguno de sus usuarios tenga incidentes abiertos asignados, ni `problemas` mientras alguno sea responsable de un problema activo | `config` |
-| `POST /api/incidents` | registra un incidente. Con `impact` y `urgency` (`alta`, `media`, `baja`) la prioridad se calcula con la matriz y `priority` se ignora; sin ninguno de los dos se usa `priority` (ver [Prioridad](#prioridad-impacto--urgencia)). `assigneeId` tiene que ser alguien con `resolver` (0 = sin asignar). `relatedIncidentId` lo relaciona con uno cerrado (quien solo reporta, con uno suyo) | `crear` |
+| `POST /api/incidents` | registra un ticket. Con `kind: "solicitud"` y `requestType` (un ítem del catálogo) es una solicitud de servicio (ver [Solicitudes](#solicitudes-de-servicio)); sin `kind`, un incidente. Con `impact` y `urgency` (`alta`, `media`, `baja`) la prioridad se calcula con la matriz y `priority` se ignora; sin ninguno de los dos se usa `priority` (ver [Prioridad](#prioridad-impacto--urgencia)). `assigneeId` tiene que ser alguien con `resolver` (0 = sin asignar). `relatedIncidentId` lo relaciona con uno cerrado (quien solo reporta, con uno suyo) | `crear` |
 | `POST /api/incidents/{id}` | cambia estado, asignado o problema. El asignado tiene que tener `resolver` (`assigneeId: 0` lo deja sin asignar) y `problemId: 0` lo desvincula. Para resolverlo (pasar al último estado) exige `resolutionCode` y `resolutionNote`. Un cerrado no se modifica | `resolver` |
 | `POST /api/incidents/{id}/comments` | `{text, public}`: respuesta (`public: true`) o nota interna. Quien lo reportó solo publica respuestas en los suyos | `resolver`, o quien lo reportó |
 | `POST /api/incidents/{id}/reopen` | `{reason}`: reabre un incidente resuelto (no uno cerrado) | `resolver` |

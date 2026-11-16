@@ -47,6 +47,10 @@ func TestLoadLegacyData(t *testing.T) {
 	if err := c.Validate(); err != nil {
 		t.Fatalf("la configuración cargada tiene que ser válida: %v", err)
 	}
+	// Antes de las solicitudes: la cuenta arranca sin catálogo y todo ticket es un incidente.
+	if c.RequestTypes == nil || len(c.RequestTypes) != 0 || tn.Incidents[0].Kind != domain.KindIncident {
+		t.Fatalf("sin catálogo de solicitudes y con el ticket como incidente: %#v %q", c.RequestTypes, tn.Incidents[0].Kind)
+	}
 
 	// El resuelto viejo (sin historial: la cuenta arranca en la resolución) se cierra al cargar, a los 2 días,
 	// y el cierre queda guardado.

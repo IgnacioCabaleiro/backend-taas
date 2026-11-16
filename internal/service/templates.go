@@ -21,6 +21,8 @@ var templates = map[string]Template{
 			{Label: "Sede", Type: "select", Options: []string{"Casa central", "Sucursal Rosario", "Remoto"}, Required: true},
 			{Label: "Equipo afectado", Type: "text"},
 		},
+		RequestTypes: []domain.RequestType{{Name: "Alta de usuario", Hours: 24}, {Name: "Acceso a un sistema", Hours: 8},
+			{Name: "Instalación de software", Hours: 24}, {Name: "Equipo nuevo", Hours: 72}},
 		RecurrenceMin: 2, RecurrenceDays: 7,
 	}},
 	"salud": {Industry: "Salud", Config: domain.Config{
@@ -35,6 +37,8 @@ var templates = map[string]Template{
 			{Label: "Afecta la atención de pacientes", Type: "select", Options: []string{"Sí", "No"}, Required: true},
 			{Label: "N° de equipo", Type: "text"},
 		},
+		RequestTypes: []domain.RequestType{{Name: "Alta de usuario en la historia clínica", Hours: 8},
+			{Name: "Acceso a turnos online", Hours: 8}, {Name: "Capacitación en sistemas", Hours: 48}, {Name: "Equipo para consultorio", Hours: 72}},
 		RecurrenceMin: 2, RecurrenceDays: 14,
 	}},
 	"logistica": {Industry: "Logística", Config: domain.Config{
@@ -49,6 +53,8 @@ var templates = map[string]Template{
 			{Label: "Patente o unidad", Type: "text"},
 			{Label: "Envíos afectados", Type: "number"},
 		},
+		RequestTypes: []domain.RequestType{{Name: "Alta de usuario", Hours: 24}, {Name: "Handheld nuevo o de reemplazo", Hours: 48},
+			{Name: "Etiquetas e insumos", Hours: 24}, {Name: "Acceso a tracking para un cliente", Hours: 8}},
 		RecurrenceMin: 3, RecurrenceDays: 7,
 	}},
 	// Punto de partida genérico: el cliente describe su rubro y ajusta los servicios en el onboarding.
@@ -63,6 +69,8 @@ var templates = map[string]Template{
 			{Label: "Área", Type: "select", Options: []string{"Administración", "Ventas", "Operaciones"}, Required: true},
 			{Label: "Contacto", Type: "text"},
 		},
+		RequestTypes: []domain.RequestType{{Name: "Alta de usuario", Hours: 24}, {Name: "Acceso a un sistema", Hours: 8},
+			{Name: "Pedido de equipo", Hours: 72}},
 		RecurrenceMin: 2, RecurrenceDays: 7,
 	}},
 }

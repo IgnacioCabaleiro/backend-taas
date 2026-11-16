@@ -16,8 +16,17 @@ import (
 //     Es de solo lectura: si vuelve a pasar, se registra un incidente relacionado.
 //
 // Cada paso queda en el historial del incidente.
+//
+// El mismo ticket sirve para las solicitudes de servicio (Kind == KindRequest): un pedido estándar del
+// catálogo (un alta, un acceso, un equipo), no una falla. Comparten el ciclo de vida, pero una solicitud no
+// tiene servicio, prioridad ni problema: su SLA sale del ítem del catálogo (RequestType) y se resuelve con
+// sus propios códigos (ver ResolutionCodesFor).
 type Incident struct {
-	ID          int    `json:"id"`
+	ID int `json:"id"`
+	// Kind: KindIncident o KindRequest. Los tickets guardados antes de las solicitudes son incidentes (ver Tenant.Normalize).
+	Kind string `json:"kind"`
+	// RequestType: el ítem del catálogo de una solicitud (Config.RequestTypes); "" en un incidente.
+	RequestType string `json:"requestType"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	Service     string `json:"service"`
@@ -60,6 +69,15 @@ func (inc *Incident) Resolved() bool { return inc.ResolvedAt != nil && inc.Close
 // Closed: está en la etapa Cerrado.
 func (inc *Incident) Closed() bool { return inc.ClosedAt != nil }
 
+// Tipos de ticket.
+const (
+	KindIncident = "incidente" // algo dejó de funcionar
+	KindRequest  = "solicitud" // un pedido estándar del catálogo
+)
+
+// IsRequest: es una solicitud de servicio.
+func (inc *Incident) IsRequest() bool { return inc.Kind == KindRequest }
+
 // Eventos del historial de un incidente.
 const (
 	EvCreated  = "creado"      // registro
@@ -81,6 +99,17 @@ var ClosingCodes = []string{"duplicado", "cancelado"}
 // ResolutionCodes: cómo terminó el incidente. Lista fija: es lo que el producto propone.
 var ResolutionCodes = []string{"solucionado", "workaround", "duplicado", "sin_reproducir", "cancelado"}
 
+// RequestResolutionCodes: cómo terminó una solicitud. Una solicitud no se "soluciona": se cumple o se rechaza.
+var RequestResolutionCodes = []string{"cumplida", "rechazada", "duplicado", "cancelado"}
+
+// ResolutionCodesFor: los códigos con los que se resuelve un ticket de ese tipo.
+func ResolutionCodesFor(kind string) []string {
+	if kind == KindRequest {
+		return RequestResolutionCodes
+	}
+	return ResolutionCodes
+}
+
 // ResolutionLabels: cómo se lee cada código en el historial (resolutionCode guarda el código).
 var ResolutionLabels = map[string]string{
 	"solucionado":    "Solucionado",
@@ -88,6 +117,8 @@ var ResolutionLabels = map[string]string{
 	"duplicado":      "Duplicado",
 	"sin_reproducir": "No se pudo reproducir",
 	"cancelado":      "Cancelado",
+	"cumplida":       "Cumplida",
+	"rechazada":      "Rechazada",
 }
 
 // Log agrega un evento al historial del incidente. Recibe el momento para que coincida con
@@ -142,6 +173,10 @@ func (inc *Incident) SyncPause(pauseStates []string, at time.Time) {
 }
 
 type NewIncident struct {
+	// Kind: KindIncident (o vacío) o KindRequest. Una solicitud pide RequestType (un ítem del catálogo) e ignora
+	// el servicio, la prioridad, el impacto, la urgencia y el problema.
+	Kind        string `json:"kind"`
+	RequestType string `json:"requestType"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	Service     string `json:"service"`

@@ -37,6 +37,35 @@ type Config struct {
 	// Nunca el inicial ni el de resolución: el reloj corre desde el registro hasta la resolución.
 	PauseStates   []string `json:"pauseStates"`
 	AutoCloseDays int      `json:"autoCloseDays"` // días sin actividad tras los que un resuelto se cierra solo
+	// Catálogo de solicitudes de servicio: lo que se puede pedir y en cuánto se cumple. Vacío = la cuenta no
+	// recibe solicitudes.
+	RequestTypes []RequestType `json:"requestTypes"`
+}
+
+// RequestType: un ítem del catálogo de solicitudes. Hours es el plazo para cumplirla (el SLA de la solicitud,
+// si el módulo está activo): no depende de una prioridad, porque un pedido estándar tiene un plazo estándar.
+type RequestType struct {
+	Name  string `json:"name"`
+	Hours int    `json:"hours"`
+}
+
+// RequestType devuelve el ítem del catálogo con ese nombre, o nil.
+func (c *Config) RequestType(name string) *RequestType {
+	for i := range c.RequestTypes {
+		if c.RequestTypes[i].Name == name {
+			return &c.RequestTypes[i]
+		}
+	}
+	return nil
+}
+
+// RequestTypeNames: los nombres del catálogo, en orden.
+func (c *Config) RequestTypeNames() []string {
+	out := []string{}
+	for _, r := range c.RequestTypes {
+		out = append(out, r.Name)
+	}
+	return out
 }
 
 // DefaultAutoCloseDays: el de todas las plantillas y el de las cuentas guardadas antes de que existiera el cierre.
@@ -229,6 +258,22 @@ func (c *Config) Validate() error {
 	if c.RecurrenceMin < 2 || c.RecurrenceDays < 1 {
 		return errors.New("la regla de recurrencia necesita al menos 2 incidentes y 1 día")
 	}
+	types := []RequestType{}
+	for _, r := range c.RequestTypes {
+		if r.Name = strings.TrimSpace(r.Name); r.Name == "" {
+			return errors.New("hay una solicitud del catálogo sin nombre")
+		}
+		for _, o := range types {
+			if o.Name == r.Name {
+				return fmt.Errorf("solicitud repetida en el catálogo: %s", r.Name)
+			}
+		}
+		if r.Hours < 1 {
+			return fmt.Errorf("la solicitud %s necesita un plazo de al menos 1 hora", r.Name)
+		}
+		types = append(types, r)
+	}
+	c.RequestTypes = types
 	return c.ValidatePauseStates()
 }
 
