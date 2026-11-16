@@ -211,6 +211,7 @@ func Tenants() []*domain.Tenant {
 		lifecycle(t, life, now, byProblem, i == 0)
 		workarounds(t)
 		ratings(t, sd.unhappy)
+		reviews(t, now)
 		out = append(out, t)
 	}
 	return out
@@ -483,6 +484,29 @@ func (s story) reopen(at time.Time, by int, reason string) {
 	s.inc.ReopenCount++
 	s.inc.AutoCloseHold = false
 	s.inc.Log(at, by, domain.EvReopened, "De %s a %s: %s", from, s.inc.Status, reason)
+}
+
+// reviews deja escrita la revisión post-problema de los problemas resueltos, con una acción ya hecha y otra pendiente.
+func reviews(t *domain.Tenant, now time.Time) {
+	for _, p := range t.Problems {
+		if p.Status != domain.Resuelto {
+			continue
+		}
+		at := p.History[len(p.History)-1].At.Add(20 * time.Hour)
+		if at.After(now) {
+			at = now
+		}
+		p.Review = &domain.Review{
+			WhatHappened: "Durante varios días se repitió el mismo síntoma: " + p.Description + " Cada incidente se resolvió por separado hasta que se vio que tenían la misma causa.",
+			Learned:      "Nadie estaba mirando el vencimiento de la configuración que falló: no había un aviso previo ni un responsable.",
+			Actions: []domain.ReviewAction{
+				{Text: "Agregar un aviso 30 días antes de cada vencimiento", OwnerID: 2, Due: now.AddDate(0, 0, -5).Format("2006-01-02"), Done: true},
+				{Text: "Documentar quién es responsable de cada configuración externa", OwnerID: 3, Due: now.AddDate(0, 0, 10).Format("2006-01-02")},
+			},
+			At:     at,
+			UserID: p.OwnerID,
+		}
+	}
 }
 
 // ratings valora dos de cada tres incidentes resueltos, como los valoraría quien los reportó. En el servicio

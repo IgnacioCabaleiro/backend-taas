@@ -1,6 +1,11 @@
 package handler
 
-import "net/http"
+import (
+	"net/http"
+	"strconv"
+
+	"taas-backend/internal/domain"
+)
 
 // Errores conocidos, workarounds e incidentes parecidos.
 
@@ -50,6 +55,25 @@ func (h *Handler) updateWorkaround(r *http.Request, tenantID, userID int) error 
 		return err
 	}
 	return h.svc.Problems.UpdateWorkaround(tenantID, userID, pathID(r), in.Text, in.Shared)
+}
+
+func (h *Handler) saveReview(r *http.Request, tenantID, userID int) error {
+	var in domain.Review
+	if err := decode(r, &in); err != nil {
+		return err
+	}
+	return h.svc.Problems.SaveReview(tenantID, userID, pathID(r), in)
+}
+
+func (h *Handler) setActionDone(r *http.Request, tenantID, userID int) error {
+	var in struct {
+		Done bool `json:"done"`
+	}
+	if err := decode(r, &in); err != nil {
+		return err
+	}
+	index, _ := strconv.Atoi(r.PathValue("n"))
+	return h.svc.Problems.SetActionDone(tenantID, userID, pathID(r), index, in.Done)
 }
 
 func (h *Handler) deflect(r *http.Request, tenantID, userID int) error {

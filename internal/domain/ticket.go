@@ -208,6 +208,26 @@ type Problem struct {
 	WorkaroundUses   []WorkaroundUse `json:"workaroundUses"`
 	// Deflections: veces que a alguien le alcanzó el workaround compartido y no abrió el ticket.
 	Deflections int `json:"deflections"`
+	// Review: la revisión post-problema, sin culpables, una vez resuelto (ver Review).
+	Review *Review `json:"review,omitempty"`
+}
+
+// Review: revisión post-problema sin culpables. Cuenta qué pasó y qué se aprendió, y deja acciones con
+// responsable y fecha para que no vuelva a pasar algo parecido. Los números (impacto, tiempos) los calcula
+// la aplicación a partir del historial: acá va lo que solo puede contar el equipo.
+type Review struct {
+	WhatHappened string         `json:"whatHappened"`
+	Learned      string         `json:"learned"`
+	Actions      []ReviewAction `json:"actions"`
+	At           time.Time      `json:"at"`
+	UserID       int            `json:"userId"`
+}
+
+type ReviewAction struct {
+	Text    string `json:"text"`
+	OwnerID int    `json:"ownerId"` // 0 = sin responsable
+	Due     string `json:"due"`     // AAAA-MM-DD; vacío = sin fecha
+	Done    bool   `json:"done"`
 }
 
 // WorkaroundUse: una vez que un incidente se resolvió con el workaround del problema.

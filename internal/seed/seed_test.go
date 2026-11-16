@@ -267,3 +267,17 @@ func TestDemoRatings(t *testing.T) {
 		}
 	}
 }
+
+// Los problemas resueltos de la demo ya tienen su revisión post-problema.
+func TestDemoReviews(t *testing.T) {
+	for _, tn := range Tenants() {
+		for _, p := range tn.Problems {
+			if (p.Status == domain.Resuelto) != (p.Review != nil) {
+				t.Errorf("%s P-%d: solo los resueltos tienen revisión", tn.Name, p.ID)
+			}
+			if p.Review != nil && (p.Review.WhatHappened == "" || len(p.Review.Actions) == 0) {
+				t.Errorf("%s P-%d: revisión incompleta", tn.Name, p.ID)
+			}
+		}
+	}
+}

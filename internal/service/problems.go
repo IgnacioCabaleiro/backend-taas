@@ -163,6 +163,66 @@ func (s *Problems) Deflect(tenantID, by, id int) error {
 	})
 }
 
+// SaveReview guarda (o reescribe) la revisión post-problema de un problema resuelto.
+func (s *Problems) SaveReview(tenantID, by, id int, in domain.Review) error {
+	return s.update(tenantID, by, func(t *domain.Tenant) error {
+		p, err := t.Problem(id)
+		if err != nil {
+			return err
+		}
+		if p.Status != domain.Resuelto {
+			return errors.New("la revisión se hace cuando el problema está resuelto")
+		}
+		if in.WhatHappened = strings.TrimSpace(in.WhatHappened); in.WhatHappened == "" {
+			return errors.New("contá qué pasó")
+		}
+		actions := []domain.ReviewAction{}
+		for _, a := range in.Actions {
+			if a.Text = strings.TrimSpace(a.Text); a.Text == "" {
+				continue
+			}
+			if a.OwnerID != 0 && t.User(a.OwnerID) == nil {
+				return fmt.Errorf("usuario %d: %w", a.OwnerID, domain.ErrNotFound)
+			}
+			if a.Due != "" {
+				if _, err := time.Parse("2006-01-02", a.Due); err != nil {
+					return fmt.Errorf("fecha inválida en la acción «%s»", a.Text)
+				}
+			}
+			actions = append(actions, a)
+		}
+		first := p.Review == nil
+		p.Review = &domain.Review{WhatHappened: in.WhatHappened, Learned: strings.TrimSpace(in.Learned), Actions: actions, At: time.Now(), UserID: by}
+		if first {
+			p.Log(by, "", "Revisión post-problema registrada con %d acciones", len(actions))
+		} else {
+			p.Log(by, "", "Revisión post-problema actualizada")
+		}
+		return nil
+	})
+}
+
+// SetActionDone marca como hecha (o pendiente) una acción de la revisión post-problema.
+func (s *Problems) SetActionDone(tenantID, by, id, index int, done bool) error {
+	return s.update(tenantID, by, func(t *domain.Tenant) error {
+		p, err := t.Problem(id)
+		if err != nil {
+			return err
+		}
+		if p.Review == nil || index < 0 || index >= len(p.Review.Actions) {
+			return fmt.Errorf("acción %d: %w", index, domain.ErrNotFound)
+		}
+		a := &p.Review.Actions[index]
+		if a.Done != done {
+			a.Done = done
+			if done {
+				p.Log(by, "", "Acción hecha: %s", a.Text)
+			}
+		}
+		return nil
+	})
+}
+
 func (s *Problems) SetOwner(tenantID, by, id, ownerID int) error {
 	return s.update(tenantID, by, func(t *domain.Tenant) error {
 		p, err := t.Problem(id)

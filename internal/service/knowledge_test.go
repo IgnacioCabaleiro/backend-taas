@@ -164,3 +164,34 @@ func TestRate(t *testing.T) {
 		t.Fatal("se valora una sola vez")
 	}
 }
+
+// La revisión post-problema se escribe con el problema resuelto, y sus acciones se marcan como hechas.
+func TestReview(t *testing.T) {
+	sv, _ := newAccount(t)
+	p := knownError(t, sv)
+	review := domain.Review{WhatHappened: "Se agotaban las licencias", Learned: "Nadie miraba el uso",
+		Actions: []domain.ReviewAction{{Text: "Alertar al 80% de uso", OwnerID: agent, Due: "2026-12-01"}, {Text: "  "}}}
+	if sv.Problems.SaveReview(tid, agent, p.ID, review) == nil {
+		t.Fatal("la revisión es para problemas resueltos")
+	}
+	must(t, sv.Problems.Advance(tid, agent, p.ID, domain.Advance{Solution: "Más licencias"}))
+	if sv.Problems.SaveReview(tid, agent, p.ID, domain.Review{}) == nil {
+		t.Fatal("hay que contar qué pasó")
+	}
+	bad := review
+	bad.Actions = []domain.ReviewAction{{Text: "x", Due: "mañana"}}
+	if sv.Problems.SaveReview(tid, agent, p.ID, bad) == nil {
+		t.Fatal("la fecha tiene que ser AAAA-MM-DD")
+	}
+	if sv.Problems.SaveReview(tid, guest, p.ID, review) == nil {
+		t.Fatal("quien solo reporta no escribe revisiones")
+	}
+	must(t, sv.Problems.SaveReview(tid, agent, p.ID, review))
+	if p.Review == nil || len(p.Review.Actions) != 1 || p.Review.UserID != agent {
+		t.Fatalf("las acciones vacías se descartan: %+v", p.Review)
+	}
+	must(t, sv.Problems.SetActionDone(tid, agent, p.ID, 0, true))
+	if !p.Review.Actions[0].Done || sv.Problems.SetActionDone(tid, agent, p.ID, 5, true) == nil {
+		t.Fatal("la acción 0 queda hecha y la 5 no existe")
+	}
+}

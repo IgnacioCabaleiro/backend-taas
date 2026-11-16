@@ -67,6 +67,8 @@ func New(svc *service.Services) http.Handler {
 	mux.HandleFunc("POST /api/incidents/{id}/workaround", h.authed(h.applyWorkaround))
 	mux.HandleFunc("PUT /api/problems/{id}/workaround", h.authed(h.updateWorkaround))
 	mux.HandleFunc("POST /api/problems/{id}/deflect", h.authed(h.deflect))
+	mux.HandleFunc("PUT /api/problems/{id}/review", h.authed(h.saveReview))
+	mux.HandleFunc("PUT /api/problems/{id}/review/actions/{n}", h.authed(h.setActionDone))
 
 	return h.middleware(mux)
 }
