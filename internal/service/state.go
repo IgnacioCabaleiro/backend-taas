@@ -12,17 +12,20 @@ type State struct{ base }
 
 // View es la cuenta tal como la ve el usuario logueado: sin contraseñas y recortada según sus permisos.
 type View struct {
-	ID          int                 `json:"id"`
-	Name        string              `json:"name"`
-	Industry    string              `json:"industry"`
-	Onboarded   bool                `json:"onboarded"`
-	OwnerID     int                 `json:"ownerId"`
-	Me          int                 `json:"me"`
-	MaxUsers    int                 `json:"maxUsers"`
-	Config      domain.Config       `json:"config"`
-	Roles       []domain.Role       `json:"roles"`
-	Users       []domain.User       `json:"users"`
-	Incidents   []*domain.Incident  `json:"incidents"`
+	ID        int                `json:"id"`
+	Name      string             `json:"name"`
+	Industry  string             `json:"industry"`
+	Onboarded bool               `json:"onboarded"`
+	OwnerID   int                `json:"ownerId"`
+	Me        int                `json:"me"`
+	MaxUsers  int                `json:"maxUsers"`
+	Config    domain.Config      `json:"config"`
+	Roles     []domain.Role      `json:"roles"`
+	Users     []domain.User      `json:"users"`
+	Incidents []*domain.Incident `json:"incidents"`
+	// Requests: las solicitudes de servicio, aparte de los incidentes (son el mismo ticket, ver domain.Incident.Kind).
+	// Así las pantallas de incidentes, el panel y los problemas no las mezclan.
+	Requests    []*domain.Incident  `json:"requests"`
 	Problems    []*domain.Problem   `json:"problems"`
 	Suggestions []domain.Suggestion `json:"suggestions"`
 }
@@ -44,7 +47,7 @@ func (s *State) View(tenantID, me int) (View, error) {
 	}
 	v := View{ID: t.ID, Name: t.Name, Industry: t.Industry, Onboarded: t.Onboarded, OwnerID: t.OwnerID, Me: me,
 		MaxUsers: domain.MaxUsers, Config: t.Config, Roles: t.Roles,
-		Incidents: []*domain.Incident{}, Problems: []*domain.Problem{}, Suggestions: []domain.Suggestion{}}
+		Incidents: []*domain.Incident{}, Requests: []*domain.Incident{}, Problems: []*domain.Problem{}, Suggestions: []domain.Suggestion{}}
 	for _, u := range t.Users {
 		u.Hash = ""
 		v.Users = append(v.Users, u)
@@ -55,11 +58,15 @@ func (s *State) View(tenantID, me int) (View, error) {
 	// son internos del equipo): de la comunicación, solo las respuestas.
 	all := t.SeesAll(me)
 	for _, inc := range t.Incidents {
+		list := &v.Incidents
+		if inc.IsRequest() {
+			list = &v.Requests
+		}
 		switch {
 		case all:
-			v.Incidents = append(v.Incidents, inc)
+			*list = append(*list, inc)
 		case inc.CreatedBy == me:
-			v.Incidents = append(v.Incidents, forReporter(inc))
+			*list = append(*list, forReporter(inc))
 		}
 	}
 	if t.Config.Modules.Problems && all {

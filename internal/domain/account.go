@@ -106,7 +106,13 @@ func (t *Tenant) Normalize() {
 	if c.AutoCloseDays == 0 { // ausente: 0 no es un valor válido (ver Config.Validate)
 		c.AutoCloseDays = DefaultAutoCloseDays
 	}
+	if c.RequestTypes == nil {
+		c.RequestTypes = []RequestType{} // las cuentas anteriores a las solicitudes arrancan sin catálogo
+	}
 	for _, inc := range t.Incidents {
+		if inc.Kind == "" {
+			inc.Kind = KindIncident // antes de las solicitudes, todo ticket era un incidente
+		}
 		if inc.History == nil {
 			inc.History = []Event{} // los incidentes viejos no tienen historial: no se inventa
 		}

@@ -34,8 +34,12 @@ func (s *Problems) Create(tenantID, by int, in domain.NewProblem) (p *domain.Pro
 		}
 		ids := []int{}
 		for _, id := range in.IncidentIDs {
-			if _, err := t.Incident(id); err != nil {
+			inc, err := t.Incident(id)
+			if err != nil {
 				return err
+			}
+			if inc.IsRequest() {
+				return fmt.Errorf("#%d es una solicitud: los problemas agrupan incidentes, no pedidos", id)
 			}
 			if !slices.Contains(ids, id) {
 				ids = append(ids, id)
@@ -148,6 +152,7 @@ func (s *Problems) Comment(tenantID, by, id int, text string) error {
 
 // Suggestions agrupa por servicio los incidentes sin problema de los últimos RecurrenceDays días
 // (abiertos o no: que se hayan resuelto uno por uno es justamente la señal de un problema de fondo).
+// Las solicitudes no cuentan: pedir muchas altas de usuario no es una falla de fondo.
 func Suggestions(t *domain.Tenant) []domain.Suggestion {
 	out := []domain.Suggestion{}
 	if !t.Config.Modules.Problems {
@@ -156,7 +161,7 @@ func Suggestions(t *domain.Tenant) []domain.Suggestion {
 	since := time.Now().AddDate(0, 0, -t.Config.RecurrenceDays)
 	by := map[string][]int{}
 	for _, inc := range t.Incidents {
-		if inc.ProblemID == 0 && inc.CreatedAt.After(since) {
+		if !inc.IsRequest() && inc.ProblemID == 0 && inc.CreatedAt.After(since) {
 			by[inc.Service] = append(by[inc.Service], inc.ID)
 		}
 	}

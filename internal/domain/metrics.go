@@ -178,8 +178,9 @@ func (t *Tenant) ComputeSLA(days int, now time.Time) SLAMetrics {
 	n := SLAPeriods[days]
 	step := time.Duration(days) * 24 * time.Hour / time.Duration(n)
 	buckets := make([]slaAcc, n)
+	// Las solicitudes no entran: estas son las métricas de la gestión de incidentes.
 	for _, inc := range t.Incidents {
-		if inc.CreatedAt.Before(start) || inc.CreatedAt.After(now) {
+		if inc.IsRequest() || inc.CreatedAt.Before(start) || inc.CreatedAt.After(now) {
 			continue
 		}
 		total.add(inc, now)
@@ -229,7 +230,7 @@ func (t *Tenant) ComputeSLA(days int, now time.Time) SLAMetrics {
 	// Por vencer: abiertos de cualquier fecha. En pausa el reloj de resolución está detenido, así que no vence.
 	horizon := now.Add(SLAAtRiskHours * time.Hour)
 	for _, inc := range t.Incidents {
-		if inc.ResolvedAt != nil {
+		if inc.ResolvedAt != nil || inc.IsRequest() {
 			continue
 		}
 		risk := func(kind string, due *time.Time, late bool) {

@@ -144,7 +144,7 @@ func checkLifecycle(t *testing.T, tn *domain.Tenant) (reopened int) {
 			if inc.ResolutionCode != "" || inc.ResolutionNote != "" || inc.ClosedAt != nil || inc.AutoCloseHold {
 				t.Errorf("%s #%d: abierto con resolución, cierre o retención", tn.Name, inc.ID)
 			}
-		case !domain.Has(domain.ResolutionCodes, inc.ResolutionCode) || inc.ResolutionNote == "":
+		case !domain.Has(domain.ResolutionCodesFor(inc.Kind), inc.ResolutionCode) || inc.ResolutionNote == "":
 			t.Errorf("%s #%d: resuelto sin código o sin nota", tn.Name, inc.ID)
 		case !strings.HasSuffix(lastResolved, " · "+domain.ResolutionLabels[inc.ResolutionCode]+": "+inc.ResolutionNote):
 			t.Errorf("%s #%d: la resolución %q no lleva la etiqueta de %q y la nota", tn.Name, inc.ID, lastResolved, inc.ResolutionCode)
@@ -164,8 +164,15 @@ func checkLifecycle(t *testing.T, tn *domain.Tenant) (reopened int) {
 		if inc.AutoCloseHold {
 			held++
 		}
-		// El vencimiento de la primera respuesta se fija al registrar y la pausa no lo mueve.
-		if want := inc.CreatedAt.Add(time.Duration(c.ResponseHours[inc.Priority]) * time.Hour); inc.ResponseDueAt == nil || !inc.ResponseDueAt.Equal(want) {
+		// El vencimiento de la primera respuesta se fija al registrar y la pausa no lo mueve. Una solicitud no tiene:
+		// su plazo es el del catálogo.
+		if inc.IsRequest() {
+			rt := c.RequestType(inc.RequestType)
+			if rt == nil || inc.ResponseDueAt != nil || inc.Priority != "" || inc.Service != "" || inc.ProblemID != 0 ||
+				inc.DueAt == nil || !inc.DueAt.Equal(inc.CreatedAt.Add(time.Duration(rt.Hours)*time.Hour)) {
+				t.Errorf("%s #%d: solicitud con datos de incidente o con un plazo que no es el del catálogo: %+v", tn.Name, inc.ID, inc)
+			}
+		} else if want := inc.CreatedAt.Add(time.Duration(c.ResponseHours[inc.Priority]) * time.Hour); inc.ResponseDueAt == nil || !inc.ResponseDueAt.Equal(want) {
 			t.Errorf("%s #%d: responseDueAt=%v, esperaba %v", tn.Name, inc.ID, inc.ResponseDueAt, want)
 		}
 		inPause := inc.ResolvedAt == nil && domain.Has(c.PauseStates, inc.Status)
@@ -211,9 +218,47 @@ func checkLifecycle(t *testing.T, tn *domain.Tenant) (reopened int) {
 func TestSeedPriorityMatrix(t *testing.T) {
 	for _, tn := range Tenants() {
 		for _, inc := range tn.Incidents {
+			if inc.IsRequest() {
+				continue // las solicitudes no tienen prioridad
+			}
 			if p, ok := domain.PriorityFor(inc.Impact, inc.Urgency); !ok || p != inc.Priority {
 				t.Fatalf("%s #%d: prioridad %s con impacto %q y urgencia %q", tn.Name, inc.ID, inc.Priority, inc.Impact, inc.Urgency)
 			}
+		}
+	}
+}
+
+// Cada cuenta de demo trae solicitudes en todas las etapas, del catálogo de su rubro, después de los incidentes.
+func TestSeedRequests(t *testing.T) {
+	for _, tn := range Tenants() {
+		stages := map[string]int{}
+		seenRequest := false
+		for _, inc := range tn.Incidents {
+			if inc.Kind != domain.KindIncident && inc.Kind != domain.KindRequest {
+				t.Fatalf("%s #%d: tipo %q", tn.Name, inc.ID, inc.Kind)
+			}
+			if !inc.IsRequest() {
+				if seenRequest {
+					t.Errorf("%s #%d: incidente después de las solicitudes: cambiaría la numeración de siempre", tn.Name, inc.ID)
+				}
+				continue
+			}
+			seenRequest = true
+			switch {
+			case inc.ResolvedAt == nil:
+				stages["abierta"]++
+			case inc.ClosedAt != nil:
+				stages["cerrada"]++
+			default:
+				stages["resuelta"]++
+			}
+			stages[inc.ResolutionCode]++
+		}
+		if stages["abierta"] == 0 || stages["resuelta"] == 0 || stages["cerrada"] == 0 || stages["cumplida"] == 0 {
+			t.Errorf("%s: faltan solicitudes en alguna etapa: %v", tn.Name, stages)
+		}
+		if len(service.Suggestions(tn)) == 0 {
+			t.Errorf("%s: las solicitudes no tienen que tapar la sugerencia de recurrencia", tn.Name)
 		}
 	}
 }

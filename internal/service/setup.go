@@ -70,6 +70,8 @@ func (t Template) build(in domain.Setup) (domain.Config, error) {
 	if in.AutoCloseDays.Set {
 		c.AutoCloseDays = in.AutoCloseDays.Value // null queda en 0: lo rechaza Validate
 	}
+	// El catálogo de solicitudes viene de la plantilla del rubro (copia: no se comparte con ella).
+	c.RequestTypes = append([]domain.RequestType{}, t.Config.RequestTypes...)
 	c.Fields = []domain.Field{}
 	if in.Fields {
 		for _, f := range t.Config.Fields {
@@ -142,6 +144,7 @@ func (s *Setup) SetConfig(tenantID, by int, c domain.Config) error {
 		}
 		// Ítems renombrados en el lugar: los datos existentes siguen al nombre nuevo (ver renames).
 		states, services := renames(t.Config.States, c.States), renames(t.Config.Services, c.Services)
+		requestTypes := renames(t.Config.RequestTypeNames(), c.RequestTypeNames())
 		c.PauseStates = []string{}
 		for _, p := range pause {
 			p = strings.TrimSpace(p)
@@ -167,6 +170,11 @@ func (s *Setup) SetConfig(tenantID, by int, c domain.Config) error {
 		for _, inc := range t.Incidents {
 			if n, ok := services[inc.Service]; ok {
 				inc.Service = n
+			}
+			// Una solicitud sigue al ítem renombrado. Si el ítem se quitó del catálogo, la solicitud conserva el nombre:
+			// el catálogo dice qué se puede pedir de acá en más, no reescribe lo que ya se pidió.
+			if n, ok := requestTypes[inc.RequestType]; ok && inc.IsRequest() {
+				inc.RequestType = n
 			}
 			if n, ok := states[inc.Status]; ok {
 				inc.Status = n

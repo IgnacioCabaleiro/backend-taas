@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1465,5 +1466,158 @@ func TestPriorityMatrix(t *testing.T) {
 	must(t, err)
 	if legacy.Priority != "alta" || legacy.Impact != "" || legacy.Urgency != "" {
 		t.Fatalf("sin impacto ni urgencia se usa la prioridad elegida: %+v", legacy)
+	}
+}
+
+// alta: una solicitud de "Alta de usuario" (24 h en la plantilla de IT), con la sede que la cuenta pide en todo ticket.
+func alta(title string) domain.NewIncident {
+	return domain.NewIncident{Kind: domain.KindRequest, RequestType: "Alta de usuario", Title: title, Fields: map[string]string{"sede": "Remoto"}}
+}
+
+// Solicitudes de servicio: salen del catálogo, que fija su plazo; no tienen servicio, prioridad ni problema, se
+// resuelven con sus propios códigos y van aparte de los incidentes en la vista, las sugerencias y las métricas.
+func TestServiceRequests(t *testing.T) {
+	sv, tn := newAccount(t)
+	if len(tn.Config.RequestTypes) == 0 {
+		t.Fatal("la plantilla trae un catálogo de solicitudes")
+	}
+	in := alta("")
+	in.Service, in.Impact, in.Urgency, in.Priority = "VPN", "alta", "alta", "alta" // se ignoran en una solicitud
+	req, err := sv.Incidents.Create(tid, guest, in)
+	must(t, err)
+	if req.Kind != domain.KindRequest || req.RequestType != "Alta de usuario" || req.Title != "Alta de usuario" ||
+		req.Service != "" || req.Priority != "" || req.Impact != "" || req.Urgency != "" {
+		t.Fatalf("solicitud con datos de incidente: %+v", req)
+	}
+	if req.DueAt == nil || req.DueAt.Sub(req.CreatedAt).Hours() != 24 || req.ResponseDueAt != nil {
+		t.Fatalf("el plazo es el del catálogo y no hay vencimiento de primera respuesta: %v %v", req.DueAt, req.ResponseDueAt)
+	}
+	if h := req.History[0]; h.Kind != domain.EvCreated || h.Text != "Solicitud registrada: Alta de usuario" {
+		t.Fatalf("evento de registro: %+v", h)
+	}
+
+	bad := alta("x")
+	bad.RequestType = "Un unicornio"
+	if _, err := sv.Incidents.Create(tid, guest, bad); err == nil {
+		t.Error("solo se pide lo que está en el catálogo")
+	}
+	bad = alta("x")
+	bad.Kind = "pedido"
+	if _, err := sv.Incidents.Create(tid, guest, bad); err == nil {
+		t.Error("el tipo tiene que ser incidente o solicitud")
+	}
+
+	// Una solicitud no se vincula a problemas, ni al crearla ni después, ni desde un problema.
+	p, err := sv.Problems.Create(tid, agent, domain.NewProblem{Title: "VPN", Service: "VPN"})
+	must(t, err)
+	in = alta("con problema")
+	in.ProblemID = p.ID
+	linked, err := sv.Incidents.Create(tid, agent, in)
+	must(t, err)
+	if linked.ProblemID != 0 {
+		t.Fatal("una solicitud nace sin problema")
+	}
+	if sv.Incidents.Update(tid, agent, req.ID, domain.IncidentPatch{ProblemID: &p.ID}) == nil {
+		t.Error("una solicitud no se vincula a un problema")
+	}
+	if _, err := sv.Problems.Create(tid, agent, domain.NewProblem{Title: "x", Service: "VPN", IncidentIDs: []int{req.ID}}); err == nil {
+		t.Error("un problema no agrupa solicitudes")
+	}
+
+	// Se resuelve con los códigos de solicitud: cumplida, rechazada, duplicado, cancelado.
+	final := tn.ResolvedState()
+	if sv.Incidents.Update(tid, agent, req.ID, domain.IncidentPatch{Status: &final, ResolutionCode: "solucionado", ResolutionNote: "listo"}) == nil {
+		t.Error("una solicitud no se resuelve con un código de incidente")
+	}
+	must(t, sv.Incidents.Update(tid, agent, req.ID, domain.IncidentPatch{Status: &final, ResolutionCode: "cumplida", ResolutionNote: "Usuario creado"}))
+	if req.ResolutionCode != "cumplida" || !strings.HasSuffix(req.History[len(req.History)-1].Text, "· Cumplida: Usuario creado") {
+		t.Fatalf("resolución: %q %+v", req.ResolutionCode, req.History[len(req.History)-1])
+	}
+	inc, err := sv.Incidents.Create(tid, agent, vpn("se cayó"))
+	must(t, err)
+	if sv.Incidents.Update(tid, agent, inc.ID, domain.IncidentPatch{Status: &final, ResolutionCode: "cumplida", ResolutionNote: "x"}) == nil {
+		t.Error("un incidente no se resuelve con un código de solicitud")
+	}
+
+	// Relacionar: solo con un cerrado del mismo tipo.
+	must(t, sv.Incidents.Close(tid, agent, req.ID))
+	again := alta("otra vez")
+	again.RelatedIncidentID = req.ID
+	if _, err := sv.Incidents.Create(tid, guest, again); err != nil {
+		t.Errorf("una solicitud se relaciona con una solicitud cerrada: %v", err)
+	}
+	cross := vpn("x")
+	cross.RelatedIncidentID = req.ID
+	if _, err := sv.Incidents.Create(tid, agent, cross); err == nil {
+		t.Error("un incidente no se relaciona con una solicitud")
+	}
+
+	// La vista las separa; las sugerencias y las métricas de SLA no las cuentan.
+	v, err := sv.State.View(tid, guest)
+	must(t, err)
+	for _, x := range v.Incidents {
+		if x.IsRequest() {
+			t.Fatalf("#%d es una solicitud y está en incidents", x.ID)
+		}
+	}
+	if len(v.Requests) != 2 { // las dos que pidió el solicitante (la del agente no es suya)
+		t.Fatalf("el solicitante ve sus solicitudes aparte: %d", len(v.Requests))
+	}
+	for _, sg := range service.Suggestions(tn) {
+		if sg.Service == "" {
+			t.Fatalf("las solicitudes no se sugieren como problema: %+v", sg)
+		}
+	}
+	incidents := 0
+	for _, x := range tn.Incidents {
+		if !x.IsRequest() {
+			incidents++
+		}
+	}
+	if m := tn.ComputeSLA(7, time.Now()); m.Total.Incidents != incidents {
+		t.Fatalf("las métricas de SLA son de incidentes: %d, esperaba %d", m.Total.Incidents, incidents)
+	}
+}
+
+// El catálogo se valida y, como los servicios y los estados, un ítem renombrado arrastra sus solicitudes.
+func TestRequestCatalog(t *testing.T) {
+	sv, tn := newAccount(t)
+	req, err := sv.Incidents.Create(tid, guest, alta("x"))
+	must(t, err)
+
+	c := tn.Config
+	c.RequestTypes = append([]domain.RequestType{}, tn.Config.RequestTypes...)
+	c.RequestTypes[0].Name = "Alta de cuenta"
+	must(t, sv.Setup.SetConfig(tid, owner, c))
+	if req.RequestType != "Alta de cuenta" {
+		t.Fatalf("renombrar el ítem arrastra sus solicitudes: %q", req.RequestType)
+	}
+
+	c = tn.Config
+	c.RequestTypes = []domain.RequestType{{Name: "Acceso", Hours: 8}}
+	must(t, sv.Setup.SetConfig(tid, owner, c))
+	if req.RequestType != "Alta de cuenta" {
+		t.Fatal("quitar un ítem no reescribe lo que ya se pidió")
+	}
+	if _, err := sv.Incidents.Create(tid, guest, alta("x")); err == nil {
+		t.Fatal("lo que se quitó del catálogo ya no se puede pedir")
+	}
+
+	for _, rts := range [][]domain.RequestType{
+		{{Name: "Acceso", Hours: 0}},
+		{{Name: " ", Hours: 8}},
+		{{Name: "Acceso", Hours: 8}, {Name: "Acceso ", Hours: 4}},
+	} {
+		c = tn.Config
+		c.RequestTypes = rts
+		if sv.Setup.SetConfig(tid, owner, c) == nil {
+			t.Errorf("catálogo inválido aceptado: %+v", rts)
+		}
+	}
+	c = tn.Config
+	c.RequestTypes = nil
+	must(t, sv.Setup.SetConfig(tid, owner, c))
+	if tn.Config.RequestTypes == nil || len(tn.Config.RequestTypes) != 0 {
+		t.Fatalf("sin catálogo queda una lista vacía: %#v", tn.Config.RequestTypes)
 	}
 }

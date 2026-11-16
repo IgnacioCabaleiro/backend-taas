@@ -25,6 +25,16 @@ type seedTenant struct {
 	titles         map[string][]string // por servicio
 	problems       []seedProblem
 	recent         string // servicio con incidentes recientes sin investigar: dispara la sugerencia
+	requests       []seedRequest
+}
+
+// seedRequest: una solicitud de servicio de demo. typ es el índice en el catálogo de la plantilla.
+type seedRequest struct {
+	typ   int
+	title string
+	age   float64 // horas desde que se pidió
+	stage string  // nueva | en_curso | cumplida | cerrada | rechazada
+	note  string  // la nota de resolución, si está resuelta
 }
 
 var seeds = []seedTenant{
@@ -48,6 +58,14 @@ var seeds = []seedTenant{
 				"Enviar los mails urgentes desde la cuenta de respaldo.", "Se actualizó el registro SPF y se configuró DKIM."},
 		},
 		recent: "Impresoras",
+		requests: []seedRequest{
+			{0, "Alta de usuario para la nueva administrativa de Rosario", 3, "nueva", ""},
+			{1, "Acceso al ERP para el equipo de cobranzas", 20, "en_curso", ""},
+			{3, "Notebook para el ingreso del lunes", 50, "en_curso", ""},
+			{2, "Instalar Power BI en el puesto de Lucía", 30, "cumplida", "Instalado y con licencia asignada."},
+			{0, "Alta de usuario para el pasante de sistemas", 120, "cerrada", "Usuario creado; se le enviaron las credenciales por mail."},
+			{1, "Acceso de administrador al servidor de archivos", 96, "rechazada", "Los permisos de administrador solo se dan al equipo de infraestructura. Se le dio acceso de lectura a la carpeta que necesita."},
+		},
 	},
 	{
 		name: "Clínica del Sol", template: "salud", domain: "clinicadelsol.demo",
@@ -69,6 +87,12 @@ var seeds = []seedTenant{
 				"Dar los turnos por teléfono mientras dure el corte.", "Renovación automática del certificado y alerta 30 días antes del vencimiento."},
 		},
 		recent: "Laboratorio",
+		requests: []seedRequest{
+			{0, "Alta en la HCE para la nueva médica de guardia", 2, "nueva", ""},
+			{2, "Capacitación en turnos online para recepción", 30, "en_curso", ""},
+			{3, "Monitor para el consultorio 4", 40, "cumplida", "Se instaló el monitor y se configuró la doble pantalla."},
+			{1, "Acceso a turnos online para la secretaria de pediatría", 100, "cerrada", "Usuario habilitado con permisos de agenda."},
+		},
 	},
 }
 
@@ -130,7 +154,7 @@ func Tenants() []*domain.Tenant {
 			created := now.Add(-time.Duration(age * float64(time.Hour)))
 			sla := time.Duration(t.Config.SLAHours[prio]) * time.Hour
 			due := created.Add(sla)
-			inc := &domain.Incident{ID: len(t.Incidents) + 1, Title: sd.titles[service][rnd.Intn(len(sd.titles[service]))],
+			inc := &domain.Incident{ID: len(t.Incidents) + 1, Kind: domain.KindIncident, Title: sd.titles[service][rnd.Intn(len(sd.titles[service]))],
 				Service: service, Priority: prio, Impact: impact, Urgency: urgency, Status: t.Config.States[rnd.Intn(len(t.Config.States)-1)],
 				Fields: map[string]string{}, CreatedBy: 1 + rnd.Intn(len(t.Users)), AssigneeID: rnd.Intn(4), CreatedAt: created, DueAt: &due}
 			for _, f := range t.Config.Fields {
@@ -202,6 +226,8 @@ func Tenants() []*domain.Tenant {
 		// Se agrega después de armar los incidentes para no cambiar los de siempre.
 		service.AddWaitingRequester(&t.Config)
 		lifecycle(t, life, now, byProblem, i == 0)
+		// Las solicitudes van al final: no cambian los incidentes de siempre ni sus números.
+		requests(t, sd.requests, now)
 		out = append(out, t)
 	}
 	return out
@@ -489,4 +515,52 @@ func classify(prio string, n int) (string, string) {
 	}
 	pair := pairs[n%len(pairs)]
 	return pair[0], pair[1]
+}
+
+// requests agrega las solicitudes de servicio de demo con su historial, con los mismos efectos que la API: el plazo
+// sale del catálogo, la primera respuesta del agente, la resolución con su código y el cierre automático.
+func requests(t *domain.Tenant, list []seedRequest, now time.Time) {
+	states, final := t.Config.States, t.ResolvedState()
+	solicitante, agent := len(t.Users), 2
+	autoClose := time.Duration(t.Config.AutoCloseDays) * 24 * time.Hour
+	for _, sr := range list {
+		rt := t.Config.RequestTypes[sr.typ]
+		created := now.Add(-time.Duration(sr.age * float64(time.Hour)))
+		due := created.Add(time.Duration(rt.Hours) * time.Hour)
+		inc := &domain.Incident{ID: len(t.Incidents) + 1, Kind: domain.KindRequest, RequestType: rt.Name, Title: sr.title,
+			Status: states[0], Fields: map[string]string{}, CreatedBy: solicitante, CreatedAt: created, DueAt: &due,
+			History: []domain.Event{}, Attachments: []domain.Attachment{}}
+		for _, f := range t.Config.Fields {
+			if f.Type == "select" {
+				inc.Fields[f.Key] = f.Options[inc.ID%len(f.Options)]
+			}
+		}
+		inc.Log(created, solicitante, domain.EvCreated, "Solicitud registrada: %s", rt.Name)
+		t.Incidents = append(t.Incidents, inc)
+		if sr.stage == "nueva" {
+			continue
+		}
+		at := created.Add(time.Hour)
+		inc.AssigneeID = agent
+		inc.Log(at, agent, domain.EvAssigned, "Asignado a %s", t.User(agent).Name)
+		inc.Respond(at)
+		inc.Log(at, agent, domain.EvReply, "Recibimos tu pedido, ya lo estamos gestionando.")
+		inc.Status = states[1]
+		inc.Log(at, agent, domain.EvStatus, "De %s a %s", states[0], inc.Status)
+		if sr.stage == "en_curso" {
+			continue
+		}
+		code, took := "cumplida", 20*time.Hour
+		if sr.stage == "rechazada" {
+			code, took = "rechazada", 6*time.Hour
+		}
+		done := created.Add(took)
+		from := inc.Status
+		inc.Status, inc.ResolvedAt, inc.ResolutionCode, inc.ResolutionNote = final, &done, code, sr.note
+		inc.Log(done, agent, domain.EvResolved, "De %s a %s · %s: %s", from, final, domain.ResolutionLabels[code], sr.note)
+		if closeAt := done.Add(autoClose); !closeAt.After(now) {
+			inc.ClosedAt = &closeAt
+			inc.Log(closeAt, 0, domain.EvClosed, "Cerrado automáticamente tras %d días sin actividad", t.Config.AutoCloseDays)
+		}
+	}
 }
