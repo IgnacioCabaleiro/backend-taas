@@ -145,11 +145,18 @@ Salvo alta, login y plantillas, todo requiere `Authorization: Bearer <token>` y 
 | `POST /api/incidents` | registra un incidente. Con `impact` y `urgency` (`alta`, `media`, `baja`) la prioridad se calcula con la matriz y `priority` se ignora; sin ninguno de los dos se usa `priority` (ver [Prioridad](#prioridad-impacto--urgencia)). `assigneeId` tiene que ser alguien con `resolver` (0 = sin asignar). `relatedIncidentId` lo relaciona con uno cerrado (quien solo reporta, con uno suyo) | `crear` |
 | `POST /api/incidents/{id}` | cambia estado, asignado o problema. El asignado tiene que tener `resolver` (`assigneeId: 0` lo deja sin asignar) y `problemId: 0` lo desvincula. Para resolverlo (pasar al último estado) exige `resolutionCode` y `resolutionNote`. Un cerrado no se modifica | `resolver` |
 | `POST /api/incidents/{id}/comments` | `{text, public}`: respuesta (`public: true`) o nota interna. Quien lo reportó solo publica respuestas en los suyos | `resolver`, o quien lo reportó |
+| `POST /api/incidents/{id}/rating` | `{rating, comment}`: valoración de 1 a 5 de quien lo reportó, una vez resuelto y una sola vez. No es actividad: no frena el cierre automático | quien lo reportó |
+| `POST /api/incidents/{id}/workaround` | `{problemId}`: resuelve un abierto con el workaround de un error conocido (lo vincula, le responde a quien lo reportó y lo resuelve con el código `workaround`). Si después se reabre, el uso queda como fallido | `resolver` |
+| `GET /api/incidents/{id}/related` | errores conocidos e incidentes parecidos, por similitud de texto | ver todos los incidentes |
+| `GET /api/knowledge/match?text=&service=` | errores conocidos parecidos a un texto. Quien solo reporta ve solo los workarounds compartidos | `crear` |
 | `POST /api/incidents/{id}/reopen` | `{reason}`: reabre un incidente resuelto (no uno cerrado) | `resolver` |
 | `POST /api/incidents/{id}/close` | `{}`: cierra un incidente resuelto | `resolver` |
 | `POST /api/incidents/{id}/attachments` | `multipart/form-data` con el archivo en el campo `file`: adjunta (responde con el estado de la cuenta) | `resolver`, o quien lo reportó |
 | `GET /api/incidents/{id}/attachments/{aid}` | descarga el archivo | quien ve el incidente |
 | `DELETE /api/incidents/{id}/attachments/{aid}` | quita el adjunto | `resolver`, o quien lo subió |
+| `PUT /api/problems/{id}/workaround` | `{text, shared}`: edita el workaround de un error conocido y decide si lo ven quienes reportan | `problemas` |
+| `POST /api/problems/{id}/deflect` | registra que a alguien le alcanzó un workaround compartido y no abrió el ticket | `crear` |
+| `PUT /api/problems/{id}/review` · `/review/actions/{n}` | revisión post-problema de un problema resuelto (qué pasó, qué aprendimos, acciones con responsable y fecha) y marcar acciones como hechas | `problemas` |
 | `POST /api/problems` · `/{id}/advance` · `/{id}/owner` · `/{id}/comments` | gestión de problemas. Crear un problema con `incidentIds` vincula esos incidentes, también los cerrados. El responsable (`ownerId`) tiene que tener `problemas` | `problemas` |
 
 El onboarding arma la configuración desde la plantilla del rubro (`GET /api/templates`, que el front usa para precargar) y
