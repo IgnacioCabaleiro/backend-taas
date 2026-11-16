@@ -8,6 +8,8 @@ type Tenants interface {
 	Get(id int) (*domain.Tenant, error)
 	// FindByEmail busca un usuario en toda la plataforma: el email es único entre cuentas.
 	FindByEmail(email string) (*domain.Tenant, *domain.User)
+	// FindByInvite busca al usuario con esa invitación pendiente.
+	FindByInvite(token string) (*domain.Tenant, *domain.User)
 	// Create asigna el ID de la cuenta y la guarda.
 	Create(t *domain.Tenant) error
 	Save(t *domain.Tenant) error

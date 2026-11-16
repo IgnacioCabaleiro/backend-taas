@@ -223,6 +223,81 @@ func (s *Problems) SetActionDone(tenantID, by, id, index int, done bool) error {
 	})
 }
 
+// swarm toma la cuenta y valida que quien opera pueda sumarse a un swarming: atiende incidentes o gestiona
+// problemas, y la cuenta tiene el módulo de problemas.
+func (s *Problems) swarm(tenantID, by, id int, fn func(t *domain.Tenant, p *domain.Problem) error) error {
+	return s.modify(tenantID, func(t *domain.Tenant) error {
+		if !t.Can(by, domain.PermProblems) && !t.Can(by, domain.PermResolve) {
+			return domain.ErrForbidden
+		}
+		if !t.Config.Modules.Problems {
+			return errors.New("la gestión de problemas no está activada en esta cuenta")
+		}
+		p, err := t.Problem(id)
+		if err != nil {
+			return err
+		}
+		return fn(t, p)
+	})
+}
+
+// StartSwarm abre un swarming: el problema lo investiga todo el equipo a la vez, en lugar de escalarlo.
+func (s *Problems) StartSwarm(tenantID, by, id int) error {
+	return s.swarm(tenantID, by, id, func(t *domain.Tenant, p *domain.Problem) error {
+		if p.Status == domain.Resuelto {
+			return errors.New("el problema ya está resuelto")
+		}
+		if p.Swarm.Active() {
+			return errors.New("ya hay un swarming en curso")
+		}
+		p.Swarm = &domain.Swarm{StartedAt: time.Now(), StartedBy: by, Members: []int{by}, Notes: []domain.SwarmNote{}}
+		p.Log(by, "", "%s abrió un swarming: el equipo investiga en conjunto", t.User(by).Name)
+		return nil
+	})
+}
+
+// SwarmNote suma un aporte al swarming en curso (y a quien lo hace, como participante).
+func (s *Problems) SwarmNote(tenantID, by, id int, kind, text string) error {
+	return s.swarm(tenantID, by, id, func(t *domain.Tenant, p *domain.Problem) error {
+		if !p.Swarm.Active() {
+			return errors.New("no hay un swarming en curso")
+		}
+		if !domain.Has(domain.SwarmKinds, kind) {
+			return errors.New("elegí si es una pista, algo descartado o un hallazgo")
+		}
+		if text = strings.TrimSpace(text); text == "" {
+			return errors.New("el aporte está vacío")
+		}
+		p.Swarm.Join(by)
+		p.Swarm.Notes = append(p.Swarm.Notes, domain.SwarmNote{At: time.Now(), UserID: by, Kind: kind, Text: text})
+		return nil
+	})
+}
+
+// JoinSwarm suma a alguien al swarming en curso.
+func (s *Problems) JoinSwarm(tenantID, by, id int) error {
+	return s.swarm(tenantID, by, id, func(t *domain.Tenant, p *domain.Problem) error {
+		if !p.Swarm.Active() {
+			return errors.New("no hay un swarming en curso")
+		}
+		p.Swarm.Join(by)
+		return nil
+	})
+}
+
+// CloseSwarm cierra el swarming en curso; sus aportes quedan en el problema.
+func (s *Problems) CloseSwarm(tenantID, by, id int) error {
+	return s.swarm(tenantID, by, id, func(t *domain.Tenant, p *domain.Problem) error {
+		if !p.Swarm.Active() {
+			return errors.New("no hay un swarming en curso")
+		}
+		now := time.Now()
+		p.Swarm.ClosedAt = &now
+		p.Log(by, "", "Swarming cerrado: %d aportes de %d personas", len(p.Swarm.Notes), len(p.Swarm.Members))
+		return nil
+	})
+}
+
 func (s *Problems) SetOwner(tenantID, by, id, ownerID int) error {
 	return s.update(tenantID, by, func(t *domain.Tenant) error {
 		p, err := t.Problem(id)

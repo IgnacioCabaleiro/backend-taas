@@ -210,6 +210,9 @@ type Problem struct {
 	Deflections int `json:"deflections"`
 	// Review: la revisión post-problema, sin culpables, una vez resuelto (ver Review).
 	Review *Review `json:"review,omitempty"`
+	Swarm  *Swarm  `json:"swarm,omitempty"`
+	// Preloaded: error conocido típico del rubro, cargado en el onboarding (ver Template.KnownErrors).
+	Preloaded bool `json:"preloaded"`
 }
 
 // Review: revisión post-problema sin culpables. Cuenta qué pasó y qué se aprendió, y deja acciones con

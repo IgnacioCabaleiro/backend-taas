@@ -75,6 +75,20 @@ func (r *JSONTenants) Get(id int) (*domain.Tenant, error) {
 	return r.tenants[id-1], nil
 }
 
+func (r *JSONTenants) FindByInvite(token string) (*domain.Tenant, *domain.User) {
+	if token == "" {
+		return nil, nil
+	}
+	for _, t := range r.tenants {
+		for i := range t.Users {
+			if t.Users[i].Invite == token {
+				return t, &t.Users[i]
+			}
+		}
+	}
+	return nil, nil
+}
+
 func (r *JSONTenants) FindByEmail(email string) (*domain.Tenant, *domain.User) {
 	for _, t := range r.tenants {
 		for i := range t.Users {

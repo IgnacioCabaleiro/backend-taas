@@ -41,6 +41,9 @@ func New(svc *service.Services) http.Handler {
 	mux.HandleFunc("POST /api/config/versions/{id}/restore", h.authed(h.restoreConfigVersion))
 
 	mux.HandleFunc("POST /api/users", h.authed(h.addUser))
+	mux.HandleFunc("POST /api/invitations", h.authed(h.invite))
+	mux.HandleFunc("GET /api/invitations/{token}", h.invitation)
+	mux.HandleFunc("POST /api/invitations/{token}/accept", h.acceptInvite)
 	mux.HandleFunc("PUT /api/users/{id}", h.authed(h.setUserRole))
 	mux.HandleFunc("DELETE /api/users/{id}", h.authed(h.deleteUser))
 	mux.HandleFunc("POST /api/roles", h.authed(h.saveRole))
@@ -68,6 +71,11 @@ func New(svc *service.Services) http.Handler {
 	mux.HandleFunc("PUT /api/problems/{id}/workaround", h.authed(h.updateWorkaround))
 	mux.HandleFunc("POST /api/problems/{id}/deflect", h.authed(h.deflect))
 	mux.HandleFunc("PUT /api/problems/{id}/review", h.authed(h.saveReview))
+	mux.HandleFunc("POST /api/problems/{id}/swarm", h.authed(h.startSwarm))
+	mux.HandleFunc("POST /api/problems/{id}/swarm/join", h.authed(h.joinSwarm))
+	mux.HandleFunc("POST /api/problems/{id}/swarm/notes", h.authed(h.swarmNote))
+	mux.HandleFunc("POST /api/problems/{id}/swarm/close", h.authed(h.closeSwarm))
+	mux.HandleFunc("POST /api/metrics/sla/simulate", h.simulateSLA)
 	mux.HandleFunc("PUT /api/problems/{id}/review/actions/{n}", h.authed(h.setActionDone))
 
 	return h.middleware(mux)

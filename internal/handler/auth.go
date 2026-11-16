@@ -27,6 +27,25 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (h *Handler) invitation(w http.ResponseWriter, r *http.Request) {
+	inv, err := h.svc.Auth.Invitation(r.PathValue("token"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, inv)
+}
+
+func (h *Handler) acceptInvite(w http.ResponseWriter, r *http.Request) {
+	var in struct{ Password string }
+	if err := decode(r, &in); err != nil {
+		fail(w, err)
+		return
+	}
+	token, err := h.svc.Auth.AcceptInvite(r.PathValue("token"), in.Password)
+	respondToken(w, token, err)
+}
+
 func respondToken(w http.ResponseWriter, token string, err error) {
 	if err != nil {
 		fail(w, err)

@@ -52,6 +52,42 @@ func (a *Auth) Signup(company, name, email, password string) (string, error) {
 const dummyHash = "00000000000000000000000000000000:0000000000000000000000000000000000000000000000000000000000000000"
 
 // TODO(seguridad): limitar los intentos de login.
+// Invitation: lo que ve quien abre el link de una invitación.
+type Invitation struct {
+	Name    string `json:"name"`
+	Email   string `json:"email"`
+	Company string `json:"company"`
+}
+
+func (a *Auth) Invitation(token string) (Invitation, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	t, u := a.tenants.FindByInvite(token)
+	if u == nil {
+		return Invitation{}, fmt.Errorf("la invitación no existe o ya se usó: %w", domain.ErrNotFound)
+	}
+	return Invitation{u.Name, u.Email, t.Name}, nil
+}
+
+// AcceptInvite activa la cuenta invitada con la contraseña que elige la persona y abre su sesión.
+func (a *Auth) AcceptInvite(token, password string) (string, error) {
+	if len(password) < minPassword {
+		return "", errors.New("la contraseña tiene que tener al menos 8 caracteres")
+	}
+	hash := HashPassword(password)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	t, u := a.tenants.FindByInvite(token)
+	if u == nil {
+		return "", fmt.Errorf("la invitación no existe o ya se usó: %w", domain.ErrNotFound)
+	}
+	u.Hash, u.Invite = hash, ""
+	if err := a.tenants.Save(t); err != nil {
+		return "", fmt.Errorf("guardar la cuenta %d: %v: %w", t.ID, err, domain.ErrInternal)
+	}
+	return a.sessions.Create(repository.Session{TenantID: t.ID, UserID: u.ID}), nil
+}
+
 func (a *Auth) Login(email, password string) (string, error) {
 	a.mu.Lock()
 	t, u := a.tenants.FindByEmail(strings.ToLower(strings.TrimSpace(email)))

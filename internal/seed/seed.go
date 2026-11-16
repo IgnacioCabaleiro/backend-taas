@@ -27,6 +27,10 @@ type seedTenant struct {
 	problems       []seedProblem
 	recent         string // servicio con incidentes recientes sin investigar: dispara la sugerencia
 	unhappy        string // servicio que cumple el SLA pero deja a la gente disconforme
+	// cross: incidentes recientes de servicios distintos con el mismo síntoma (servicio, título), para el radar.
+	cross [][2]string
+	// swarm: aportes al swarming en curso del problema en análisis (quién, tipo, texto).
+	swarm []swarmNote
 }
 
 var seeds = []seedTenant{
@@ -51,6 +55,16 @@ var seeds = []seedTenant{
 		},
 		recent:  "Impresoras",
 		unhappy: "VPN",
+		cross: [][2]string{
+			{"WiFi", "Sin red en el segundo piso desde el corte de luz"},
+			{"Impresoras", "La impresora del segundo piso no responde desde el corte de luz"},
+			{"ERP Facturación", "Desde el corte de luz el ERP no conecta en el segundo piso"},
+		},
+		swarm: []swarmNote{
+			{3, "descartado", "No es la red: desde casa por VPN tarda lo mismo."},
+			{2, "pista", "Solo pasa con facturas de más de 50 ítems."},
+			{1, "hallazgo", "El reporte de fin de mes corre a la misma hora y bloquea la tabla de facturas."},
+		},
 	},
 	{
 		name: "Clínica del Sol", template: "salud", domain: "clinicadelsol.demo",
@@ -73,6 +87,14 @@ var seeds = []seedTenant{
 		},
 		recent:  "Laboratorio",
 		unhappy: "Historia clínica electrónica",
+		cross: [][2]string{
+			{"Laboratorio", "El analizador quedó sin conexión después del corte de luz en Diagnóstico"},
+			{"Equipamiento de imágenes", "El tomógrafo quedó sin conexión después del corte de luz en Diagnóstico"},
+		},
+		swarm: []swarmNote{
+			{3, "pista", "Los estudios grandes son los que más tardan."},
+			{2, "hallazgo", "El visor descarga cada estudio entero antes de mostrarlo: con los de tomografía tarda minutos."},
+		},
 	},
 }
 
@@ -209,6 +231,8 @@ func Tenants() []*domain.Tenant {
 		service.AddWaitingRequester(&t.Config)
 		t.AddVersion(now.AddDate(0, 0, -21), 1, domain.ConfigChanges(first, t.Config), 0)
 		lifecycle(t, life, now, byProblem, i == 0)
+		crossIncidents(t, sd.cross, now)
+		swarming(t, sd.swarm, now)
 		workarounds(t)
 		ratings(t, sd.unhappy)
 		reviews(t, now)
@@ -484,6 +508,51 @@ func (s story) reopen(at time.Time, by int, reason string) {
 	s.inc.ReopenCount++
 	s.inc.AutoCloseHold = false
 	s.inc.Log(at, by, domain.EvReopened, "De %s a %s: %s", from, s.inc.Status, reason)
+}
+
+type swarmNote struct {
+	user       int
+	kind, text string
+}
+
+// crossIncidents registra, en las últimas horas, incidentes de servicios distintos con el mismo síntoma
+// y sin problema: el radar de recurrencia tiene que encontrarlos juntos.
+func crossIncidents(t *domain.Tenant, cross [][2]string, now time.Time) {
+	for k, c := range cross {
+		at := now.Add(-time.Duration(5-k) * time.Hour)
+		inc := &domain.Incident{ID: len(t.Incidents) + 1, Title: c[1], Service: c[0], Priority: "alta", Impact: "alta", Urgency: "media",
+			Status: t.Config.States[0], Fields: map[string]string{}, CreatedBy: 4, CreatedAt: at, History: []domain.Event{},
+			Attachments: []domain.Attachment{}}
+		for _, f := range t.Config.Fields {
+			if f.Type == "select" {
+				inc.Fields[f.Key] = f.Options[0]
+			}
+		}
+		prio, _ := domain.PriorityFor(inc.Impact, inc.Urgency)
+		inc.Priority = prio
+		due := at.Add(time.Duration(t.Config.SLAHours[prio]) * time.Hour)
+		resp := at.Add(time.Duration(t.Config.ResponseHours[prio]) * time.Hour)
+		inc.DueAt, inc.ResponseDueAt = &due, &resp
+		inc.Log(at, 4, domain.EvCreated, "Incidente registrado")
+		t.Incidents = append(t.Incidents, inc)
+	}
+}
+
+// swarming deja en curso un swarming sobre el problema en análisis, con los aportes de la demo.
+func swarming(t *domain.Tenant, notes []swarmNote, now time.Time) {
+	for _, p := range t.Problems {
+		if p.Status != domain.EnAnalisis || len(notes) == 0 {
+			continue
+		}
+		start := now.Add(-26 * time.Hour)
+		p.Swarm = &domain.Swarm{StartedAt: start, StartedBy: p.OwnerID, Members: []int{p.OwnerID}, Notes: []domain.SwarmNote{}}
+		for k, n := range notes {
+			p.Swarm.Join(n.user)
+			p.Swarm.Notes = append(p.Swarm.Notes, domain.SwarmNote{At: start.Add(time.Duration(3+k*6) * time.Hour), UserID: n.user, Kind: n.kind, Text: n.text})
+		}
+		p.History = append(p.History, domain.Event{At: start, Text: t.User(p.OwnerID).Name + " abrió un swarming: el equipo investiga en conjunto", UserID: p.OwnerID})
+		return
+	}
 }
 
 // reviews deja escrita la revisión post-problema de los problemas resueltos, con una acción ya hecha y otra pendiente.
