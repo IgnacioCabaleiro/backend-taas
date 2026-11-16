@@ -73,7 +73,7 @@ func New(svc *service.Services) http.Handler {
 // middleware: CORS y límite de tamaño del body.
 func (h *Handler) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// ponytail: CORS abierto, es una demo local (la sesión va en un header, no en cookies). Restringir el origen antes de exponerlo.
+		// TODO(seguridad): restringir el origen de CORS antes de publicarlo. La sesión viaja en un header, no en cookies.
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE")
