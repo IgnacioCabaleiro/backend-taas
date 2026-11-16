@@ -188,10 +188,16 @@ func (s *Setup) RestoreVersion(tenantID, by, versionID int) error {
 		if err != nil {
 			return err
 		}
-		if len(domain.ConfigChanges(t.Config, v.Config)) == 0 {
+		c := v.Config.Clone()
+		if v.Config.RequestTypes == nil {
+			// Una versión guardada antes de que existiera el catálogo de solicitudes no dice nada de él: se conserva el
+			// vigente (si no, restaurarla borraría el catálogo sin que nadie lo haya pedido).
+			c.RequestTypes = t.Config.RequestTypes
+		}
+		if len(domain.ConfigChanges(t.Config, c)) == 0 {
 			return errors.New("esa versión es igual a la configuración vigente")
 		}
-		return applyConfig(t, by, v.Config, v.ID)
+		return applyConfig(t, by, c, v.ID)
 	})
 }
 
@@ -207,6 +213,14 @@ func applyConfig(t *domain.Tenant, by int, c domain.Config, restoredFrom int) er
 	// Ítems renombrados en el lugar: los datos existentes siguen al nombre nuevo (ver renames).
 	states, services := renames(t.Config.States, c.States), renames(t.Config.Services, c.Services)
 	requestTypes := renames(t.Config.RequestTypeNames(), c.RequestTypeNames())
+	if restoredFrom != 0 {
+		// Al restaurar, la heurística por posición no alcanza: entre dos versiones lejanas tomaría un ítem agregado
+		// después como "renombrado" a uno quitado antes, y movería tickets de servicio, de estado o de solicitud.
+		// Solo se deshace un renombre que el historial registró (de la versión restaurada en adelante).
+		states = undoRenames(t, restoredFrom, states, func(c domain.Config) []string { return c.States })
+		services = undoRenames(t, restoredFrom, services, func(c domain.Config) []string { return c.Services })
+		requestTypes = undoRenames(t, restoredFrom, requestTypes, func(c domain.Config) []string { return c.RequestTypeNames() })
+	}
 	c.PauseStates = []string{}
 	for _, p := range pause {
 		p = strings.TrimSpace(p)
@@ -261,6 +275,28 @@ func applyConfig(t *domain.Tenant, by int, c domain.Config, restoredFrom int) er
 		inc.SyncPause(c.PauseStates, now)
 	}
 	return nil
+}
+
+// undoRenames deja, de los renombres inferidos al restaurar la versión from (actual → restaurado), solo los que
+// deshacen un renombre que de verdad pasó: alguna versión posterior a from renombró restaurado → actual.
+func undoRenames(t *domain.Tenant, from int, inferred map[string]string, names func(domain.Config) []string) map[string]string {
+	happened := map[[2]string]bool{}
+	vs := t.ConfigVersions
+	for i := 0; i+1 < len(vs); i++ {
+		if vs[i].ID < from {
+			continue
+		}
+		for o, n := range renames(names(vs[i].Config), names(vs[i+1].Config)) {
+			happened[[2]string{o, n}] = true
+		}
+	}
+	out := map[string]string{}
+	for cur, restored := range inferred {
+		if happened[[2]string{restored, cur}] {
+			out[cur] = restored
+		}
+	}
+	return out
 }
 
 // renames detecta los ítems renombrados en el lugar: con la misma cantidad de ítems, la posición

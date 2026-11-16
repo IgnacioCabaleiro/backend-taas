@@ -1780,3 +1780,41 @@ func TestRequestsOutsideIncidentTools(t *testing.T) {
 		t.Fatal("una solicitud no se resuelve con un workaround")
 	}
 }
+
+// Restaurar una versión lejana no adivina renombres por posición: un servicio agregado después no pasa a ser
+// "el mismo" que uno quitado antes, y sus incidentes conservan su servicio.
+func TestRestoreDoesNotGuessRenames(t *testing.T) {
+	sv, tn := newAccount(t)
+	v1 := len(tn.ConfigVersions)
+	c := tn.Config.Clone()
+	c.Services = c.Services[:len(c.Services)-1] // se quita el último (WiFi)
+	must(t, sv.Setup.SetConfig(tid, owner, c))
+	c = tn.Config.Clone()
+	c.Services = append(c.Services, "Telefonía") // y después se agrega uno nuevo, en la misma posición
+	must(t, sv.Setup.SetConfig(tid, owner, c))
+	inc, err := sv.Incidents.Create(tid, agent, domain.NewIncident{Title: "sin tono", Service: "Telefonía", Priority: "alta", Fields: map[string]string{"sede": "Remoto"}})
+	must(t, err)
+
+	must(t, sv.Setup.RestoreVersion(tid, owner, v1))
+	if inc.Service != "Telefonía" {
+		t.Fatalf("restaurar movió el incidente de servicio: %q", inc.Service)
+	}
+	last := tn.ConfigVersions[len(tn.ConfigVersions)-1]
+	if last.RestoredFrom != v1 {
+		t.Fatalf("la versión nueva marca de cuál se restauró: %+v", last)
+	}
+}
+
+// Una versión guardada antes del catálogo de solicitudes no lo borra al restaurarla.
+func TestRestoreKeepsRequestCatalog(t *testing.T) {
+	sv, tn := newAccount(t)
+	tn.ConfigVersions[0].Config.RequestTypes = nil // como las versiones de antes de las solicitudes
+	c := tn.Config.Clone()
+	c.AutoCloseDays++
+	must(t, sv.Setup.SetConfig(tid, owner, c))
+	want := len(tn.Config.RequestTypes)
+	must(t, sv.Setup.RestoreVersion(tid, owner, 1))
+	if len(tn.Config.RequestTypes) != want || want == 0 {
+		t.Fatalf("restaurar una versión sin catálogo conserva el vigente: %d, esperaba %d", len(tn.Config.RequestTypes), want)
+	}
+}
