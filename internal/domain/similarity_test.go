@@ -23,13 +23,16 @@ func TestRank(t *testing.T) {
 	if len(got) != 1 || got[0].ID != 1 || got[0].Shared[0] != "desconecta" {
 		t.Fatalf("solo la VPN se parece: %+v", got)
 	}
+	if got := rank("se corta la vpn", map[int]string{1: "se corta el wifi"}, nil, 3); len(got) != 0 {
+		t.Fatalf("una sola palabra en común entre servicios distintos es casualidad: %+v", got)
+	}
 	if got := rank("hola", docs, nil, 3); len(got) != 0 {
 		t.Fatalf("un texto sin palabras útiles no sugiere nada: %+v", got)
 	}
-	// El bonus de servicio desempata, pero no inventa coincidencias.
+	// Con una palabra en común, solo cuenta el del mismo servicio.
 	got = rank("no anda el sistema", map[int]string{1: "sistema de ruteo", 2: "sistema de ventas"}, map[int]float64{2: ServiceBonus}, 3)
-	if len(got) != 2 || got[0].ID != 2 {
-		t.Fatalf("a igual texto, gana el del mismo servicio: %+v", got)
+	if len(got) != 1 || got[0].ID != 2 {
+		t.Fatalf("solo el del mismo servicio: %+v", got)
 	}
 	if got := rank("teclado", map[int]string{1: "mouse"}, map[int]float64{1: 1}, 3); len(got) != 0 {
 		t.Fatalf("sin palabras en común no hay coincidencia, aunque haya bonus: %+v", got)

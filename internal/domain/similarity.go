@@ -54,8 +54,8 @@ type Match struct {
 const MinMatchScore = 0.18
 
 // rank compara query contra docs (id -> texto) y devuelve los mejores limit por encima de MinMatchScore.
-// bonus suma puntaje a los documentos que el llamador considera más cercanos (por ejemplo, el mismo servicio),
-// siempre que compartan alguna palabra.
+// bonus suma puntaje a los documentos que el llamador considera más cercanos (por ejemplo, el mismo servicio).
+// Hace falta compartir al menos dos palabras, o una si el documento tiene bonus.
 func rank(query string, docs map[int]string, bonus map[int]float64, limit int) []Match {
 	q := Terms(query)
 	if len(q) == 0 || len(docs) == 0 {
@@ -102,7 +102,8 @@ func rank(query string, docs map[int]string, bonus map[int]float64, limit int) [
 				shared = append(shared, w)
 			}
 		}
-		if len(shared) == 0 {
+		// Una sola palabra en común es casualidad, salvo entre tickets del mismo servicio.
+		if len(shared) == 0 || (len(shared) == 1 && bonus[id] == 0) {
 			continue
 		}
 		score := math.Min(1, dot/(qn*dn)+bonus[id])
