@@ -69,6 +69,8 @@ type Tenant struct {
 	NextRoleID int         `json:"nextRoleId"`
 	Incidents  []*Incident `json:"incidents"`
 	Problems   []*Problem  `json:"problems"`
+	// Historial de la configuración, de la más vieja a la vigente (ver ConfigVersion).
+	ConfigVersions []ConfigVersion `json:"configVersions"`
 }
 
 func (t *Tenant) Clone() *Tenant {
@@ -108,6 +110,10 @@ func (t *Tenant) Normalize() {
 	}
 	if c.RequestTypes == nil {
 		c.RequestTypes = []RequestType{} // las cuentas anteriores a las solicitudes arrancan sin catálogo
+	}
+	// Después de completar la configuración: la primera versión del historial ya la guarda normalizada.
+	if t.Onboarded {
+		t.EnsureFirstVersion(time.Now(), t.OwnerID) // cuentas guardadas antes de que existiera el historial
 	}
 	for _, inc := range t.Incidents {
 		if inc.Kind == "" {

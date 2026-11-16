@@ -34,6 +34,10 @@ func (h *Handler) setConfig(r *http.Request, tenantID, userID int) error {
 	return h.svc.Setup.SetConfig(tenantID, userID, in)
 }
 
+func (h *Handler) restoreConfigVersion(r *http.Request, tenantID, userID int) error {
+	return h.svc.Setup.RestoreVersion(tenantID, userID, pathID(r))
+}
+
 func (h *Handler) addUser(r *http.Request, tenantID, userID int) error {
 	var in struct {
 		Name, Email, Password string

@@ -14,6 +14,9 @@ import (
 func TestTenants(t *testing.T) {
 	reopened, bySolution := 0, 0
 	for _, tn := range Tenants() {
+		if n := len(tn.ConfigVersions); n != 2 || len(tn.ConfigVersions[1].Changes) == 0 || len(domain.ConfigChanges(tn.ConfigVersions[1].Config, tn.Config)) != 0 {
+			t.Errorf("%s: la demo arranca con 2 versiones y la última es la vigente: %d", tn.Name, n)
+		}
 		if len(service.Suggestions(tn)) == 0 {
 			t.Errorf("%s: sin sugerencias de recurrencia", tn.Name)
 		}

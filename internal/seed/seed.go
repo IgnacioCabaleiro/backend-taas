@@ -224,7 +224,10 @@ func Tenants() []*domain.Tenant {
 		}
 		// La demo pausa el SLA mientras espera al solicitante, como el onboarding con "waitsRequester".
 		// Se agrega después de armar los incidentes para no cambiar los de siempre.
+		first := t.Config.Clone()
+		t.EnsureFirstVersion(now.AddDate(0, 0, -30), 1)
 		service.AddWaitingRequester(&t.Config)
+		t.AddVersion(now.AddDate(0, 0, -21), 1, domain.ConfigChanges(first, t.Config), 0)
 		lifecycle(t, life, now, byProblem, i == 0)
 		// Las solicitudes van al final: no cambian los incidentes de siempre ni sus números.
 		requests(t, sd.requests, now)
