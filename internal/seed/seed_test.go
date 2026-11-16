@@ -326,3 +326,19 @@ func TestDemoReviews(t *testing.T) {
 		}
 	}
 }
+
+// El radar de la demo muestra varios casos por cuenta, cada uno con incidentes de servicios distintos y sin mezclarse
+// con los incidentes de siempre: así se ve que el síntoma común aparece aunque cada servicio lo cuente a su manera.
+func TestDemoRadar(t *testing.T) {
+	for _, tn := range Tenants() {
+		groups := tn.CrossServiceRecurrence(time.Now())
+		if len(groups) < 3 {
+			t.Errorf("%s: la demo tiene que mostrar al menos 3 casos en el radar, tiene %d", tn.Name, len(groups))
+		}
+		for _, g := range groups {
+			if len(g.Services) < 2 || len(g.IncidentIDs) > len(g.Services)+1 {
+				t.Errorf("%s: caso del radar mezclado con otros incidentes: %+v", tn.Name, g)
+			}
+		}
+	}
+}

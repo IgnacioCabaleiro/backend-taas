@@ -77,6 +77,18 @@ var seeds = []seedTenant{
 			{"WiFi", "Sin red en el segundo piso desde el corte de luz"},
 			{"Impresoras", "La impresora del segundo piso no responde desde el corte de luz"},
 			{"ERP Facturación", "Desde el corte de luz el ERP no conecta en el segundo piso"},
+			// Un certificado vencido: cada servicio lo cuenta a su manera.
+			{"Correo", "Aviso de certificado vencido al abrir el correo"},
+			{"VPN", "Aviso de certificado vencido al conectar la VPN"},
+			{"ERP Facturación", "Aviso de certificado vencido al entrar al ERP"},
+			// Una actualización de Windows que rompió varias cosas a la vez.
+			{"Impresoras", "Tras la actualización de Windows la impresora no aparece"},
+			{"WiFi", "Tras la actualización de Windows la notebook no ve el WiFi"},
+			{"Correo", "Tras la actualización de Windows Outlook no abre"},
+			// El cambio de contraseña obligatorio que no se propagó.
+			{"ERP Facturación", "Usuario bloqueado en el ERP por la contraseña nueva"},
+			{"Correo", "Cuenta de correo bloqueada por la contraseña nueva"},
+			{"WiFi", "El WiFi corporativo no acepta la contraseña nueva"},
 		},
 		swarm: []swarmNote{
 			{3, "descartado", "No es la red: desde casa por VPN tarda lo mismo."},
@@ -114,6 +126,17 @@ var seeds = []seedTenant{
 		cross: [][2]string{
 			{"Laboratorio", "El analizador quedó sin conexión después del corte de luz en Diagnóstico"},
 			{"Equipamiento de imágenes", "El tomógrafo quedó sin conexión después del corte de luz en Diagnóstico"},
+			// La migración del servidor: todo anda más lento, cada uno lo reporta en su sistema.
+			{"Historia clínica electrónica", "La HCE quedó muy lenta con la migración del servidor"},
+			{"Turnos online", "El portal de turnos quedó muy lento con la migración del servidor"},
+			{"Facturación a obras sociales", "La facturación quedó muy lenta con la migración del servidor"},
+			// Un certificado vencido en la integración con terceros.
+			{"Laboratorio", "El analizador rechaza la conexión por certificado vencido"},
+			{"Facturación a obras sociales", "La presentación a obras sociales falla por certificado vencido"},
+			// Un cambio de contraseña obligatorio que no se propagó.
+			{"Historia clínica electrónica", "Médicos bloqueados en la HCE por la contraseña nueva"},
+			{"Turnos online", "Recepción bloqueada en turnos por la contraseña nueva"},
+			{"Laboratorio", "El sistema de laboratorio no acepta la contraseña nueva"},
 		},
 		swarm: []swarmNote{
 			{3, "pista", "Los estudios grandes son los que más tardan."},
@@ -164,9 +187,9 @@ func Tenants() []*domain.Tenant {
 		final := t.ResolvedState()
 		byProblem := map[int]string{}
 
-		// 45 incidentes repartidos en los últimos 30 días, más 3 recientes del servicio sin investigar.
+		// 90 incidentes repartidos en los últimos 30 días, más 3 recientes del servicio sin investigar.
 		ages := []float64{30, 9, 0.5} // horas
-		for k := 0; k < 45; k++ {
+		for k := 0; k < 90; k++ {
 			ages = append(ages, 36+rnd.Float64()*24*29)
 		}
 		sort.Sort(sort.Reverse(sort.Float64Slice(ages)))
@@ -545,7 +568,8 @@ type swarmNote struct {
 // y sin problema: el radar de recurrencia tiene que encontrarlos juntos.
 func crossIncidents(t *domain.Tenant, cross [][2]string, now time.Time) {
 	for k, c := range cross {
-		at := now.Add(-time.Duration(5-k) * time.Hour)
+		// Repartidos en las últimas horas, el más reciente al final: todos caen dentro de la ventana de recurrencia.
+		at := now.Add(-time.Duration(len(cross)-k) * 3 * time.Hour)
 		inc := &domain.Incident{ID: len(t.Incidents) + 1, Kind: domain.KindIncident, Title: c[1], Service: c[0], Priority: "alta", Impact: "alta", Urgency: "media",
 			Status: t.Config.States[0], Fields: map[string]string{}, CreatedBy: 4, CreatedAt: at, History: []domain.Event{},
 			Attachments: []domain.Attachment{}}
