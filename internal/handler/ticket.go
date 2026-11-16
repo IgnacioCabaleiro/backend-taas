@@ -37,6 +37,17 @@ func (h *Handler) commentIncident(r *http.Request, tenantID, userID int) error {
 	return h.svc.Incidents.Comment(tenantID, userID, pathID(r), in.Text, in.Public)
 }
 
+func (h *Handler) rateIncident(r *http.Request, tenantID, userID int) error {
+	var in struct {
+		Rating  int    `json:"rating"`
+		Comment string `json:"comment"`
+	}
+	if err := decode(r, &in); err != nil {
+		return err
+	}
+	return h.svc.Incidents.Rate(tenantID, userID, pathID(r), in.Rating, in.Comment)
+}
+
 func (h *Handler) reopenIncident(r *http.Request, tenantID, userID int) error {
 	var in struct{ Reason string }
 	if err := decode(r, &in); err != nil {

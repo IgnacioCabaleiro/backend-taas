@@ -58,7 +58,15 @@ type Incident struct {
 	RelatedIncidentID int  `json:"relatedIncidentId"` // incidente cerrado del que es continuación; 0 = ninguno
 	// Archivos adjuntos (ver Attachment). Los ve cualquiera que vea el incidente.
 	Attachments []Attachment `json:"attachments"`
+	// Valoración de quien lo reportó, una vez resuelto: de 1 (muy mal) a 5 (excelente); 0 = sin valorar.
+	// No es un evento del historial: valorar no es actividad y no frena el cierre automático.
+	Rating        int        `json:"rating"`
+	RatingComment string     `json:"ratingComment"`
+	RatedAt       *time.Time `json:"ratedAt,omitempty"`
 }
+
+// Satisfied: la valoración cuenta como conforme (4 o 5), como en una encuesta CSAT.
+func (inc *Incident) Satisfied() bool { return inc.Rating >= 4 }
 
 // ErrClosed: un incidente cerrado es de solo lectura.
 var ErrClosed = errors.New("el incidente está cerrado: registrá un incidente relacionado")
@@ -229,6 +237,56 @@ type Problem struct {
 	Solution    string    `json:"solution"`
 	CreatedAt   time.Time `json:"createdAt"`
 	History     []Event   `json:"history"`
+	// WorkaroundShared: quienes reportan ven el workaround mientras escriben un incidente parecido,
+	// y pueden resolverlo solos sin abrir un ticket (ver Deflections).
+	WorkaroundShared bool            `json:"workaroundShared"`
+	WorkaroundUses   []WorkaroundUse `json:"workaroundUses"`
+	// Deflections: veces que a alguien le alcanzó el workaround compartido y no abrió el ticket.
+	Deflections int `json:"deflections"`
+	// Review: la revisión post-problema, sin culpables, una vez resuelto (ver Review).
+	Review *Review `json:"review,omitempty"`
+}
+
+// Review: revisión post-problema sin culpables. Cuenta qué pasó y qué se aprendió, y deja acciones con
+// responsable y fecha para que no vuelva a pasar algo parecido. Los números (impacto, tiempos) los calcula
+// la aplicación a partir del historial: acá va lo que solo puede contar el equipo.
+type Review struct {
+	WhatHappened string         `json:"whatHappened"`
+	Learned      string         `json:"learned"`
+	Actions      []ReviewAction `json:"actions"`
+	At           time.Time      `json:"at"`
+	UserID       int            `json:"userId"`
+}
+
+type ReviewAction struct {
+	Text    string `json:"text"`
+	OwnerID int    `json:"ownerId"` // 0 = sin responsable
+	Due     string `json:"due"`     // AAAA-MM-DD; vacío = sin fecha
+	Done    bool   `json:"done"`
+}
+
+// WorkaroundUse: una vez que un incidente se resolvió con el workaround del problema.
+// Failed: el incidente se reabrió después, así que el workaround no alcanzó.
+type WorkaroundUse struct {
+	IncidentID int       `json:"incidentId"`
+	At         time.Time `json:"at"`
+	UserID     int       `json:"userId"`
+	Failed     bool      `json:"failed"`
+}
+
+// WorkaroundEffectiveness: qué parte de los usos del workaround no terminó en reapertura (0 a 100).
+// ok es false si todavía no se usó.
+func (p *Problem) WorkaroundEffectiveness() (pct int, ok bool) {
+	if len(p.WorkaroundUses) == 0 {
+		return 0, false
+	}
+	good := 0
+	for _, u := range p.WorkaroundUses {
+		if !u.Failed {
+			good++
+		}
+	}
+	return good * 100 / len(p.WorkaroundUses), true
 }
 
 // Log agrega un evento al historial del problema.

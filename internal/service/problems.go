@@ -117,6 +117,116 @@ func (s *Problems) Advance(tenantID, by, id int, in domain.Advance) error {
 	})
 }
 
+// UpdateWorkaround cambia el workaround de un error conocido y si se comparte con quienes reportan.
+// El workaround evoluciona mientras se busca la solución definitiva; los usos anteriores se conservan.
+func (s *Problems) UpdateWorkaround(tenantID, by, id int, text string, shared bool) error {
+	return s.update(tenantID, by, func(t *domain.Tenant) error {
+		p, err := t.Problem(id)
+		if err != nil {
+			return err
+		}
+		if p.Status != domain.ErrorConocido {
+			return errors.New("el workaround se edita mientras el problema es un error conocido")
+		}
+		text = strings.TrimSpace(text)
+		if shared && text == "" {
+			return errors.New("para compartir un workaround primero hay que escribirlo")
+		}
+		switch {
+		case text != p.Workaround && text == "":
+			p.Log(by, "", "Workaround eliminado")
+		case text != p.Workaround:
+			p.Log(by, "", "Workaround actualizado: %s", text)
+		}
+		if shared != p.WorkaroundShared {
+			if shared {
+				p.Log(by, "", "Workaround compartido con quienes reportan")
+			} else {
+				p.Log(by, "", "Workaround visible solo para el equipo")
+			}
+		}
+		p.Workaround, p.WorkaroundShared = text, shared
+		return nil
+	})
+}
+
+// Deflect registra que a alguien le alcanzó un workaround compartido y no abrió el ticket.
+// Lo puede hacer cualquiera que pueda crear tickets: es la otra cara de registrar uno.
+func (s *Problems) Deflect(tenantID, by, id int) error {
+	return s.base.update(tenantID, by, domain.PermCreate, func(t *domain.Tenant) error {
+		p, err := t.Problem(id)
+		if err != nil {
+			return err
+		}
+		if !t.Config.Modules.Problems || p.Status != domain.ErrorConocido || !p.WorkaroundShared {
+			return fmt.Errorf("problema %d: %w", id, domain.ErrNotFound)
+		}
+		p.Deflections++
+		p.Log(by, "", "A %s le alcanzó el workaround y no abrió un ticket", t.User(by).Name)
+		return nil
+	})
+}
+
+// SaveReview guarda (o reescribe) la revisión post-problema de un problema resuelto.
+func (s *Problems) SaveReview(tenantID, by, id int, in domain.Review) error {
+	return s.update(tenantID, by, func(t *domain.Tenant) error {
+		p, err := t.Problem(id)
+		if err != nil {
+			return err
+		}
+		if p.Status != domain.Resuelto {
+			return errors.New("la revisión se hace cuando el problema está resuelto")
+		}
+		if in.WhatHappened = strings.TrimSpace(in.WhatHappened); in.WhatHappened == "" {
+			return errors.New("contá qué pasó")
+		}
+		actions := []domain.ReviewAction{}
+		for _, a := range in.Actions {
+			if a.Text = strings.TrimSpace(a.Text); a.Text == "" {
+				continue
+			}
+			if a.OwnerID != 0 && t.User(a.OwnerID) == nil {
+				return fmt.Errorf("usuario %d: %w", a.OwnerID, domain.ErrNotFound)
+			}
+			if a.Due != "" {
+				if _, err := time.Parse("2006-01-02", a.Due); err != nil {
+					return fmt.Errorf("fecha inválida en la acción «%s»", a.Text)
+				}
+			}
+			actions = append(actions, a)
+		}
+		first := p.Review == nil
+		p.Review = &domain.Review{WhatHappened: in.WhatHappened, Learned: strings.TrimSpace(in.Learned), Actions: actions, At: time.Now(), UserID: by}
+		if first {
+			p.Log(by, "", "Revisión post-problema registrada con %d acciones", len(actions))
+		} else {
+			p.Log(by, "", "Revisión post-problema actualizada")
+		}
+		return nil
+	})
+}
+
+// SetActionDone marca como hecha (o pendiente) una acción de la revisión post-problema.
+func (s *Problems) SetActionDone(tenantID, by, id, index int, done bool) error {
+	return s.update(tenantID, by, func(t *domain.Tenant) error {
+		p, err := t.Problem(id)
+		if err != nil {
+			return err
+		}
+		if p.Review == nil || index < 0 || index >= len(p.Review.Actions) {
+			return fmt.Errorf("acción %d: %w", index, domain.ErrNotFound)
+		}
+		a := &p.Review.Actions[index]
+		if a.Done != done {
+			a.Done = done
+			if done {
+				p.Log(by, "", "Acción hecha: %s", a.Text)
+			}
+		}
+		return nil
+	})
+}
+
 func (s *Problems) SetOwner(tenantID, by, id, ownerID int) error {
 	return s.update(tenantID, by, func(t *domain.Tenant) error {
 		p, err := t.Problem(id)

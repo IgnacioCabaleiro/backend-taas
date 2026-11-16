@@ -50,6 +50,7 @@ func New(svc *service.Services) http.Handler {
 	mux.HandleFunc("POST /api/incidents", h.authed(h.createIncident))
 	mux.HandleFunc("POST /api/incidents/{id}", h.authed(h.updateIncident))
 	mux.HandleFunc("POST /api/incidents/{id}/comments", h.authed(h.commentIncident))
+	mux.HandleFunc("POST /api/incidents/{id}/rating", h.authed(h.rateIncident))
 	mux.HandleFunc("POST /api/incidents/{id}/reopen", h.authed(h.reopenIncident))
 	mux.HandleFunc("POST /api/incidents/{id}/close", h.authed(h.closeIncident))
 	mux.HandleFunc("POST /api/incidents/{id}/attachments", h.authed(h.addAttachment))
@@ -60,13 +61,22 @@ func New(svc *service.Services) http.Handler {
 	mux.HandleFunc("POST /api/problems/{id}/owner", h.authed(h.setProblemOwner))
 	mux.HandleFunc("POST /api/problems/{id}/comments", h.authed(h.commentProblem))
 
+	// Errores conocidos y workarounds.
+	mux.HandleFunc("GET /api/knowledge/match", h.matchKnowledge)
+	mux.HandleFunc("GET /api/incidents/{id}/related", h.relatedToIncident)
+	mux.HandleFunc("POST /api/incidents/{id}/workaround", h.authed(h.applyWorkaround))
+	mux.HandleFunc("PUT /api/problems/{id}/workaround", h.authed(h.updateWorkaround))
+	mux.HandleFunc("POST /api/problems/{id}/deflect", h.authed(h.deflect))
+	mux.HandleFunc("PUT /api/problems/{id}/review", h.authed(h.saveReview))
+	mux.HandleFunc("PUT /api/problems/{id}/review/actions/{n}", h.authed(h.setActionDone))
+
 	return h.middleware(mux)
 }
 
 // middleware: CORS y límite de tamaño del body.
 func (h *Handler) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// ponytail: CORS abierto, es una demo local (la sesión va en un header, no en cookies). Restringir el origen antes de exponerlo.
+		// TODO(seguridad): restringir el origen de CORS antes de publicarlo. La sesión viaja en un header, no en cookies.
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE")

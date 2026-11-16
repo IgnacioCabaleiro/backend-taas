@@ -265,3 +265,64 @@ func TestSeedRequests(t *testing.T) {
 		}
 	}
 }
+
+// La demo muestra workarounds con historia: usados, alguno fallido y compartidos.
+func TestDemoWorkarounds(t *testing.T) {
+	uses := 0
+	for _, tn := range Tenants() {
+		for _, p := range tn.Problems {
+			uses += len(p.WorkaroundUses)
+			if p.Status == domain.ErrorConocido && (!p.WorkaroundShared || p.Deflections == 0) {
+				t.Errorf("%s P-%d: el error conocido de la demo comparte su workaround", tn.Name, p.ID)
+			}
+			for _, u := range p.WorkaroundUses {
+				inc, _ := tn.Incident(u.IncidentID)
+				if inc.ProblemID != p.ID {
+					t.Errorf("%s P-%d: uso de un incidente ajeno #%d", tn.Name, p.ID, u.IncidentID)
+				}
+				if !u.Failed && inc.ResolutionCode != "workaround" && inc.ResolvedAt != nil && inc.ReopenCount == 0 {
+					t.Errorf("%s #%d: uso efectivo sin resolución con workaround", tn.Name, inc.ID)
+				}
+			}
+		}
+	}
+	if uses == 0 {
+		t.Error("la demo tiene que mostrar usos del workaround")
+	}
+}
+
+// La demo tiene valoraciones, y en un servicio por cuenta la gente queda disconforme aunque se cumpla el SLA.
+func TestDemoRatings(t *testing.T) {
+	for _, tn := range Tenants() {
+		rated, unhappy := 0, 0
+		for _, inc := range tn.Incidents {
+			if inc.Rating == 0 {
+				continue
+			}
+			rated++
+			if inc.ResolvedAt == nil || inc.RatedAt.Before(*inc.ResolvedAt) || inc.Rating < 1 || inc.Rating > 5 {
+				t.Errorf("%s #%d: valoración inválida", tn.Name, inc.ID)
+			}
+			if !inc.Satisfied() {
+				unhappy++
+			}
+		}
+		if rated < 10 || unhappy == 0 {
+			t.Errorf("%s: la demo tiene que tener valoraciones, y alguna disconforme: %d / %d", tn.Name, rated, unhappy)
+		}
+	}
+}
+
+// Los problemas resueltos de la demo ya tienen su revisión post-problema.
+func TestDemoReviews(t *testing.T) {
+	for _, tn := range Tenants() {
+		for _, p := range tn.Problems {
+			if (p.Status == domain.Resuelto) != (p.Review != nil) {
+				t.Errorf("%s P-%d: solo los resueltos tienen revisión", tn.Name, p.ID)
+			}
+			if p.Review != nil && (p.Review.WhatHappened == "" || len(p.Review.Actions) == 0) {
+				t.Errorf("%s P-%d: revisión incompleta", tn.Name, p.ID)
+			}
+		}
+	}
+}

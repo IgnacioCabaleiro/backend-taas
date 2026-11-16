@@ -8,7 +8,7 @@ import (
 
 // MemorySessions guarda las sesiones en memoria.
 //
-// ponytail: sin vencimiento y se pierden al reiniciar (hay que volver a entrar).
+// TODO(seguridad): las sesiones no vencen y se pierden al reiniciar.
 // Pasar a Redis o a una tabla con expiración antes de exponerlo a internet.
 type MemorySessions struct {
 	mu      sync.Mutex

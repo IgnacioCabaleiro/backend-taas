@@ -12,7 +12,7 @@ import (
 
 // JSONTenants guarda todas las cuentas en un archivo que se reescribe entero en cada cambio.
 //
-// ponytail: alcanza para una demo. Las cuentas viven en memoria y Get devuelve el puntero
+// Las cuentas viven en memoria y Get devuelve el puntero
 // compartido, así que la exclusión mutua la pone el servicio (ver service.Services).
 // Pasar a MySQL/Postgres con tenant_id cuando haya datos reales: solo cambia esta implementación.
 type JSONTenants struct {

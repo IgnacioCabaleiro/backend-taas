@@ -51,7 +51,7 @@ func (a *Auth) Signup(company, name, email, password string) (string, error) {
 // y no delate qué emails tienen cuenta. Sirve cualquier valor con el formato sal:clave.
 const dummyHash = "00000000000000000000000000000000:0000000000000000000000000000000000000000000000000000000000000000"
 
-// ponytail: sin límite de intentos. Agregar rate limiting antes de exponerlo a internet.
+// TODO(seguridad): limitar los intentos de login.
 func (a *Auth) Login(email, password string) (string, error) {
 	a.mu.Lock()
 	t, u := a.tenants.FindByEmail(strings.ToLower(strings.TrimSpace(email)))
